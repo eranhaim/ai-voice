@@ -27,68 +27,29 @@ python bot.py
 
 ---
 
-## Deploy to AWS EC2 with Docker
+## Deploy to EC2
 
-### 1. Launch an EC2 Instance
+### 1. SSH into the Instance
 
-- Go to **AWS Console > EC2 > Launch Instance**
-- **AMI:** Amazon Linux 2023
-- **Instance type:** `t3.micro` (free tier eligible, plenty for this bot)
-- **Key pair:** Create or select one (you'll need the `.pem` file to SSH in)
-- **Security group:** Allow SSH (port 22) from your IP
-- **Storage:** 8 GB default is fine
-- Click **Launch Instance**
+From your local machine (Windows):
 
-### 2. SSH into Your Instance
-
-```bash
-chmod 400 your-key.pem
-ssh -i your-key.pem ec2-user@<your-ec2-public-ip>
+```powershell
+ssh -i key.pem ubuntu@54.173.144.0
 ```
 
-### 3. Install Docker
+### 2. Copy the Project to EC2
 
-```bash
-sudo yum update -y
-sudo yum install -y docker git
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo usermod -aG docker ec2-user
+From your local machine, open a second terminal:
+
+```powershell
+scp -i key.pem -r "C:\Users\Eran\Desktop\AI OF voice" ubuntu@54.173.144.0:~/voice-bot
 ```
 
-Log out and back in for the docker group to take effect:
-
-```bash
-exit
-ssh -i your-key.pem ec2-user@<your-ec2-public-ip>
-```
-
-### 4. Get the Code onto EC2
-
-**Option A — Git (if you pushed to a repo):**
-
-```bash
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
-```
-
-**Option B — SCP (copy files directly):**
-
-From your local machine:
-
-```bash
-scp -i your-key.pem -r "C:\Users\Eran\Desktop\AI OF voice" ec2-user@<your-ec2-public-ip>:~/voice-bot
-```
-
-Then on EC2:
+### 3. Create the `.env` File on EC2
 
 ```bash
 cd ~/voice-bot
-```
 
-### 5. Create the `.env` File on EC2
-
-```bash
 cat > .env << 'EOF'
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
@@ -98,39 +59,29 @@ EOF
 
 Replace the values with your actual keys.
 
-### 6. Build and Run the Docker Container
+### 4. Build and Run
 
 ```bash
-docker build -t voice-bot .
-docker run -d --name voice-bot --restart unless-stopped --env-file .env voice-bot
+docker compose up -d --build
 ```
 
 That's it — the bot is running.
 
-### 7. Useful Commands
+### 5. Useful Commands
 
 ```bash
-# Check if the container is running
-docker ps
-
 # View live logs
-docker logs -f voice-bot
+docker compose logs -f
 
 # Stop the bot
-docker stop voice-bot
+docker compose down
 
-# Start it again
-docker start voice-bot
+# Rebuild after code changes
+docker compose up -d --build
 
-# Restart after code changes
-docker stop voice-bot && docker rm voice-bot
-docker build -t voice-bot .
-docker run -d --name voice-bot --restart unless-stopped --env-file .env voice-bot
+# Check status
+docker compose ps
 ```
-
-### 8. Auto-restart on Reboot
-
-The `--restart unless-stopped` flag in the run command means Docker will automatically restart the bot if the EC2 instance reboots. Docker itself starts on boot because of the `systemctl enable docker` step.
 
 ---
 
