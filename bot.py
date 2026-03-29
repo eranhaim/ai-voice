@@ -136,7 +136,7 @@ def main() -> None:
     print(f"  Text -> TTS ({TTS_MODEL})")
     print(f"  Voice -> STS ({STS_MODEL})")
     print("Ready.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
