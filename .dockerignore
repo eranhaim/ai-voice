@@ -1,0 +1,13 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+*.mp3
+*.ogg
+*.wav
+.venv
+venv
+README.md
+.env.example
+*.pem

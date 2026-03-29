@@ -1,94 +1,151 @@
-# Hebrew Text-to-Speech — Telegram Bot & CLI
+# Hebrew Voice Bot — Telegram + ElevenLabs
 
-AI-powered Hebrew text-to-speech using Microsoft's neural voice engine. Generates natural-sounding female voice messages (HilaNeural) that you can send directly through Telegram.
+A Telegram bot that converts text to speech (Hebrew female voice) and converts voice messages to a female voice using ElevenLabs.
 
-**Free — no API keys or paid services required for TTS.**
+- **Send text** -> bot replies with a spoken voice message
+- **Send a voice recording** -> bot converts it to a female voice and sends it back
 
 ---
 
-## Quick Start
-
-### 1. Install dependencies
+## Run Locally
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Create a Telegram bot
-
-1. Open Telegram and message **@BotFather**
-2. Send `/newbot` and follow the prompts
-3. Copy the bot token you receive
-
-### 3. Configure
-
-Create a `.env` file (or copy from `.env.example`):
+Create a `.env` file (see `.env.example`):
 
 ```
-TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_BOT_TOKEN=your_token
+ELEVENLABS_API_KEY=your_key
+ELEVENLABS_VOICE_ID=XB0fDUnXU5powFXDhCwa
 ```
-
-### 4. Run the bot
 
 ```bash
 python bot.py
 ```
 
-Now open your bot in Telegram and send it any Hebrew text — it will reply with a voice message.
-
 ---
 
-## Telegram Bot Commands
+## Deploy to AWS EC2 with Docker
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Welcome message and help |
-| `/rate <value>` | Adjust speed — e.g. `/rate -10%` (slower) or `/rate +20%` (faster) |
-| `/pitch <value>` | Adjust pitch — e.g. `/pitch +5Hz` (higher) or `/pitch -3Hz` (lower) |
-| `/file` | Toggle also sending audio as a downloadable MP3 file |
-| `/settings` | Show current voice settings |
-| `/reset` | Reset all settings to defaults |
+### 1. Launch an EC2 Instance
 
----
+- Go to **AWS Console > EC2 > Launch Instance**
+- **AMI:** Amazon Linux 2023
+- **Instance type:** `t3.micro` (free tier eligible, plenty for this bot)
+- **Key pair:** Create or select one (you'll need the `.pem` file to SSH in)
+- **Security group:** Allow SSH (port 22) from your IP
+- **Storage:** 8 GB default is fine
+- Click **Launch Instance**
 
-## CLI Usage (no Telegram needed)
-
-Generate audio files directly from the command line:
+### 2. SSH into Your Instance
 
 ```bash
-# Basic usage
-python generate.py "שלום, מה שלומך היום?"
-
-# Custom output file
-python generate.py "שלום עולם" -o hello.mp3
-
-# Adjust rate and pitch
-python generate.py "הודעה חשובה" -o message.mp3 -r -10% -p +2Hz
+chmod 400 your-key.pem
+ssh -i your-key.pem ec2-user@<your-ec2-public-ip>
 ```
 
-### CLI Arguments
+### 3. Install Docker
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `text` | (required) | Hebrew text to convert |
-| `-o, --output` | `output.mp3` | Output file path |
-| `-r, --rate` | `-5%` | Speech rate (e.g. `-10%`, `+20%`) |
-| `-p, --pitch` | `+0Hz` | Pitch (e.g. `+5Hz`, `-3Hz`) |
+```bash
+sudo yum update -y
+sudo yum install -y docker git
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker ec2-user
+```
+
+Log out and back in for the docker group to take effect:
+
+```bash
+exit
+ssh -i your-key.pem ec2-user@<your-ec2-public-ip>
+```
+
+### 4. Get the Code onto EC2
+
+**Option A — Git (if you pushed to a repo):**
+
+```bash
+git clone https://github.com/your-username/your-repo.git
+cd your-repo
+```
+
+**Option B — SCP (copy files directly):**
+
+From your local machine:
+
+```bash
+scp -i your-key.pem -r "C:\Users\Eran\Desktop\AI OF voice" ec2-user@<your-ec2-public-ip>:~/voice-bot
+```
+
+Then on EC2:
+
+```bash
+cd ~/voice-bot
+```
+
+### 5. Create the `.env` File on EC2
+
+```bash
+cat > .env << 'EOF'
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+ELEVENLABS_VOICE_ID=XB0fDUnXU5powFXDhCwa
+EOF
+```
+
+Replace the values with your actual keys.
+
+### 6. Build and Run the Docker Container
+
+```bash
+docker build -t voice-bot .
+docker run -d --name voice-bot --restart unless-stopped --env-file .env voice-bot
+```
+
+That's it — the bot is running.
+
+### 7. Useful Commands
+
+```bash
+# Check if the container is running
+docker ps
+
+# View live logs
+docker logs -f voice-bot
+
+# Stop the bot
+docker stop voice-bot
+
+# Start it again
+docker start voice-bot
+
+# Restart after code changes
+docker stop voice-bot && docker rm voice-bot
+docker build -t voice-bot .
+docker run -d --name voice-bot --restart unless-stopped --env-file .env voice-bot
+```
+
+### 8. Auto-restart on Reboot
+
+The `--restart unless-stopped` flag in the run command means Docker will automatically restart the bot if the EC2 instance reboots. Docker itself starts on boot because of the `systemctl enable docker` step.
 
 ---
 
-## Voice Details
+## Configuration
 
-- **Voice:** `he-IL-HilaNeural` — Microsoft's neural Hebrew female voice
-- **Engine:** Edge TTS (free, no API key)
-- **Output:** MP3 audio
-- **Default rate:** Slightly slower than standard (`-5%`) for a more natural conversational tone
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
+| `ELEVENLABS_API_KEY` | API key from elevenlabs.io |
+| `ELEVENLABS_VOICE_ID` | Voice to use (see below) |
 
----
+### Available Free-Tier Voices
 
-## Tips for Natural-Sounding Results
-
-- **Slow down slightly** — `/rate -10%` sounds more conversational
-- **Add punctuation** — commas and periods create natural pauses
-- **Keep sentences short** — sounds more natural than long paragraphs
-- **Use the pitch control** — slight pitch adjustments can add personality
+| Name | Voice ID | Style |
+|------|----------|-------|
+| Charlotte | `XB0fDUnXU5powFXDhCwa` | Seductive, young female |
+| Rachel | `21m00Tcm4TlvDq8ikWAM` | Calm, warm female |
+| Alice | `Xb7hH8MSUJpSbSDYk0k2` | Confident, British female |
