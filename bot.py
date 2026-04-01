@@ -1,9 +1,7 @@
 import os
-import asyncio
 import logging
 from io import BytesIO
 
-import httpx
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
 from telegram import Update
@@ -24,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "jqcCZkN6Knx8BJ5TBdYR")
+VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "jqcCZkN6Knx8BJ5TBdYR")  # Zara
 
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
@@ -65,11 +63,11 @@ def speech_to_speech(audio_bytes: bytes) -> bytes:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Voice Bot\n"
-        "━━━━━━━━━━\n\n"
+        "Voice Bot (Zara)\n"
+        "━━━━━━━━━━━━━━━━\n\n"
         "Two modes:\n\n"
-        "1. Send TEXT — I'll speak it as a female voice (Hebrew TTS)\n"
-        "2. Send a VOICE MESSAGE — I'll convert it to a female voice\n"
+        "1. Send TEXT — I'll speak it in Zara's voice (Hebrew TTS)\n"
+        "2. Send a VOICE MESSAGE — I'll convert it to Zara's voice\n"
     )
 
 
@@ -116,17 +114,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Something went wrong. Please try again.")
 
 
-def force_clear_session(token: str) -> None:
-    """Kill any existing polling sessions before we start ours."""
-    api = f"https://api.telegram.org/bot{token}"
-    with httpx.Client() as client:
-        client.post(f"{api}/deleteWebhook", params={"drop_pending_updates": "true"})
-        client.post(f"{api}/getUpdates", json={"offset": -1, "timeout": 0})
-    logger.info("Cleared existing Telegram sessions, waiting 5s...")
-    import time
-    time.sleep(5)
-
-
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -137,8 +124,6 @@ def main() -> None:
         print("ELEVENLABS_API_KEY not found in .env")
         print("Get a free key at: https://elevenlabs.io")
         return
-
-    force_clear_session(token)
 
     app = Application.builder().token(token).build()
 
