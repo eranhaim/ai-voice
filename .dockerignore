@@ -11,3 +11,4 @@ venv
 README.md
 .env.example
 *.pem
+web/
