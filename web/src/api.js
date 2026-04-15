@@ -61,3 +61,10 @@ export async function getRuns(telegramId) {
   if (res.status === 401) throw new Error("Unauthorized");
   return res.json();
 }
+
+export async function getVoices(telegramId) {
+  const params = telegramId ? `?telegram_id=${telegramId}` : "";
+  const res = await fetch(`${BASE}/voices${params}`, { headers: headers() });
+  if (res.status === 401) throw new Error("Unauthorized");
+  return res.json();
+}

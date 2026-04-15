@@ -109,6 +109,40 @@ async def delete_user(telegram_id: int, authorization: str | None = Header(defau
 
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
+# ── Voices ────────────────────────────────────────────────────────────────────
+
+class VoiceOut(BaseModel):
+    telegram_id: int
+    name: str
+    elevenlabs_voice_id: str
+    created_at: str
+
+
+@app.get("/api/voices", response_model=list[VoiceOut])
+async def list_voices(
+    telegram_id: int | None = None,
+    authorization: str | None = Header(default=None),
+):
+    _require_auth(authorization)
+    db = get_db()
+
+    query = {}
+    if telegram_id is not None:
+        query["telegram_id"] = telegram_id
+
+    voices = []
+    async for doc in db.voices.find(query).sort("created_at", -1):
+        voices.append(VoiceOut(
+            telegram_id=doc["telegram_id"],
+            name=doc["name"],
+            elevenlabs_voice_id=doc.get("elevenlabs_voice_id", ""),
+            created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
+        ))
+    return voices
+
+
+# ── Runs ──────────────────────────────────────────────────────────────────────
+
 class RunOut(BaseModel):
     telegram_id: int
     type: str

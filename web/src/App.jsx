@@ -3,6 +3,7 @@ import { isLoggedIn, logout } from "./api";
 import Login from "./components/Login";
 import Users from "./components/Users";
 import Runs from "./components/Runs";
+import Voices from "./components/Voices";
 import "./App.css";
 
 export default function App() {
@@ -25,6 +26,12 @@ export default function App() {
             Users
           </button>
           <button
+            className={tab === "voices" ? "active" : ""}
+            onClick={() => setTab("voices")}
+          >
+            Voices
+          </button>
+          <button
             className={tab === "runs" ? "active" : ""}
             onClick={() => setTab("runs")}
           >
@@ -42,7 +49,9 @@ export default function App() {
         </button>
       </header>
       <main>
-        {tab === "users" ? <Users /> : <Runs />}
+        {tab === "users" && <Users />}
+        {tab === "voices" && <Voices />}
+        {tab === "runs" && <Runs />}
       </main>
     </div>
   );
