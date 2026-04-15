@@ -1,13 +1,10 @@
 import os
 import secrets
-import asyncio
-import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from db import get_db
@@ -26,25 +23,6 @@ app.add_middleware(
 )
 
 _tokens: set[str] = set()
-
-# ── Temp audio store (in-memory, auto-purged) ────────────────────────────────
-
-_audio_store: dict[str, tuple[bytes, float]] = {}
-AUDIO_TTL_SECONDS = 600
-
-
-async def _purge_audio_loop():
-    while True:
-        await asyncio.sleep(120)
-        now = time.time()
-        expired = [k for k, (_, ts) in _audio_store.items() if now - ts > AUDIO_TTL_SECONDS]
-        for k in expired:
-            _audio_store.pop(k, None)
-
-
-@app.on_event("startup")
-async def _start_purge():
-    asyncio.create_task(_purge_audio_loop())
 
 
 def _require_auth(authorization: str | None):
@@ -69,31 +47,6 @@ async def login(body: LoginRequest):
     token = secrets.token_hex(32)
     _tokens.add(token)
     return LoginResponse(token=token)
-
-
-# ── Temp audio (for inline mode) ──────────────────────────────────────────────
-
-class AudioUploadResponse(BaseModel):
-    audio_id: str
-
-
-@app.post("/api/audio/upload", response_model=AudioUploadResponse)
-async def upload_audio(request: Request):
-    body = await request.body()
-    if not body:
-        raise HTTPException(status_code=400, detail="Empty body")
-    audio_id = secrets.token_hex(16)
-    _audio_store[audio_id] = (body, time.time())
-    return AudioUploadResponse(audio_id=audio_id)
-
-
-@app.get("/audio/{audio_id}")
-async def serve_audio(audio_id: str):
-    entry = _audio_store.get(audio_id)
-    if not entry:
-        raise HTTPException(status_code=404, detail="Audio not found or expired")
-    audio_bytes, _ = entry
-    return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────

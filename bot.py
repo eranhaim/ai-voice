@@ -6,15 +6,13 @@ from io import BytesIO
 from openai import OpenAI
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
-import httpx
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultVoice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     ConversationHandler,
-    InlineQueryHandler,
     filters,
     ContextTypes,
 )
@@ -45,8 +43,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
-API_INTERNAL_URL = "http://api:8000"
 
 UNAUTHORIZED_MSG = "You are not authorized to use this bot."
 
@@ -397,47 +393,6 @@ async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
-# ── Inline mode ──────────────────────────────────────────────────────────────
-
-async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.inline_query
-    user_id = query.from_user.id
-    text = query.query.strip()
-
-    if not text:
-        return
-
-    if not await is_authorized(user_id):
-        return
-
-    try:
-        voice_id = await get_user_voice_id(user_id)
-        audio_data = text_to_speech(text, voice_id)
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{API_INTERNAL_URL}/api/audio/upload",
-                content=audio_data,
-            )
-            resp.raise_for_status()
-            audio_id = resp.json()["audio_id"]
-
-        voice_url = f"{PUBLIC_BASE_URL}/audio/{audio_id}"
-
-        results = [
-            InlineQueryResultVoice(
-                id=audio_id,
-                voice_url=voice_url,
-                title="Send voice message",
-            )
-        ]
-        await query.answer(results, cache_time=0)
-        await log_run(user_id, "inline_tts", text)
-
-    except Exception:
-        logger.exception("Inline TTS failed for user %d", user_id)
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -471,7 +426,6 @@ def main() -> None:
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
     app.add_handler(CallbackQueryHandler(handle_voice_delete, pattern=r"^voice_delete:"))
-    app.add_handler(InlineQueryHandler(handle_inline_query))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
