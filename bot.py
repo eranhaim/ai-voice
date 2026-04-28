@@ -1,5 +1,6 @@
 import os
 import logging
+import subprocess
 import uuid
 from io import BytesIO
 
@@ -125,6 +126,18 @@ def delete_elevenlabs_voice(voice_id: str) -> None:
         logger.exception("Failed to delete voice %s from ElevenLabs", voice_id)
 
 
+def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
+    result = subprocess.run(
+        ["ffmpeg", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", "pipe:1"],
+        input=mp3_bytes,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        logger.error("ffmpeg failed: %s", result.stderr.decode()[:200])
+        return mp3_bytes
+    return result.stdout
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -165,8 +178,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         audio_data = text_to_speech(text, voice_id)
-        logger.info("TTS done: %d bytes", len(audio_data))
-        await update.message.reply_voice(voice=audio_data)
+        ogg_data = mp3_to_ogg_opus(audio_data)
+        logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
+        await update.message.reply_voice(voice=ogg_data)
         await log_run(user_id, "tts", text)
     except Exception:
         logger.exception("TTS failed")
@@ -200,9 +214,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.exception("Transcription failed, continuing with voice conversion")
 
         converted = speech_to_speech(audio_bytes, voice_id)
-        logger.info("STS done: %d bytes", len(converted))
+        ogg_data = mp3_to_ogg_opus(converted)
+        logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
-        await update.message.reply_voice(voice=converted)
+        await update.message.reply_voice(voice=ogg_data)
         await log_run(user_id, "sts", transcription)
     except Exception:
         logger.exception("STS failed")
