@@ -70,6 +70,7 @@ def text_to_speech(text: str, voice_id: str) -> bytes:
         model_id=TTS_MODEL,
         output_format="mp3_44100_128",
         language_code="he",
+        previous_text="את אישה פתיינית שפונה לגבר בצורה טבעית",
     )
     buffer = BytesIO()
     for chunk in audio_iter:
