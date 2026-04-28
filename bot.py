@@ -91,34 +91,6 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
     return buffer.getvalue()
 
 
-NIKUD_PROMPT = (
-    "אתה מעבד טקסט עברי לפני הקראה. "
-    "הוסף ניקוד רק במקומות שמבדילים בין זכר לנקבה או שמשנים את ההגייה. "
-    "ברירת המחדל: הדובר/ת פונה לגבר. "
-    "אל תשנה את המילים, אל תוסיף מילים, אל תתרגם. החזר רק את הטקסט המנוקד."
-)
-
-
-def add_nikud(text: str) -> str:
-    client = _get_openai()
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": NIKUD_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            temperature=0,
-            max_tokens=len(text) * 3,
-        )
-        result = response.choices[0].message.content.strip()
-        logger.info("Nikud: %s -> %s", text[:60], result[:60])
-        return result
-    except Exception:
-        logger.exception("Nikud preprocessing failed, using original text")
-        return text
-
-
 def transcribe(audio_bytes: bytes) -> str:
     client = _get_openai()
     audio_file = BytesIO(audio_bytes)
@@ -205,8 +177,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_chat_action("record_voice")
 
     try:
-        processed_text = add_nikud(text)
-        audio_data = text_to_speech(processed_text, voice_id)
+        audio_data = text_to_speech(text, voice_id)
         ogg_data = mp3_to_ogg_opus(audio_data)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
