@@ -64,13 +64,13 @@ def _get_openai() -> OpenAI:
 
 def text_to_speech(text: str, voice_id: str) -> bytes:
     client = _get_elevenlabs()
+    tagged_text = "[flirty, speaking to a man] " + text
     audio_iter = client.text_to_speech.convert(
-        text=text,
+        text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
         output_format="mp3_44100_128",
         language_code="he",
-        previous_text="את אישה פתיינית שפונה לגבר בצורה טבעית",
     )
     buffer = BytesIO()
     for chunk in audio_iter:
