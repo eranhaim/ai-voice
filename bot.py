@@ -44,7 +44,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-UNAUTHORIZED_MSG = "You are not authorized to use this bot."
+MIN_SAMPLE_DURATION = 5
+
+UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
 WAITING_NAME, COLLECTING_SAMPLES = range(2)
 
@@ -101,7 +103,6 @@ def transcribe(audio_bytes: bytes) -> str:
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
-    """Clone a voice via ElevenLabs IVC and return the new voice_id."""
     client = _get_elevenlabs()
     files = []
     for i, data in enumerate(audio_files):
@@ -132,13 +133,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text(
-        "Voice Bot\n"
+        "בוט קולי\n"
         "━━━━━━━━━━\n\n"
-        "Send TEXT or a VOICE MESSAGE and I'll convert it.\n\n"
-        "Voice commands:\n"
-        "/voices — choose your active voice\n"
-        "/newvoice — create a voice from recordings\n"
-        "/deletevoice — remove a custom voice\n"
+        "שלח/י טקסט או הודעה קולית ואני אמיר אותם.\n\n"
+        "פקודות:\n"
+        "/voices — בחירת קול פעיל\n"
+        "/newvoice — יצירת קול חדש מהקלטות\n"
+        "/deletevoice — מחיקת קול מותאם\n"
     )
 
 
@@ -155,7 +156,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if len(text) > 5000:
-        await update.message.reply_text("Text too long. Max 5,000 characters.")
+        await update.message.reply_text("הטקסט ארוך מדי. מקסימום 5,000 תווים.")
         return
 
     voice_id = await get_user_voice_id(user_id)
@@ -169,7 +170,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await log_run(user_id, "tts", text)
     except Exception:
         logger.exception("TTS failed")
-        await update.message.reply_text("Something went wrong. Please try again.")
+        await update.message.reply_text("משהו השתבש. נסה/י שוב.")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -205,7 +206,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await log_run(user_id, "sts", transcription)
     except Exception:
         logger.exception("STS failed")
-        await update.message.reply_text("Something went wrong. Please try again.")
+        await update.message.reply_text("משהו השתבש. נסה/י שוב.")
 
 
 # ── /voices — select active voice ────────────────────────────────────────────
@@ -220,7 +221,7 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     voices = await get_user_voices(user_id)
 
     is_default = current_voice_id == DEFAULT_VOICE_ID
-    default_label = (">> " if is_default else "") + "Default Voice"
+    default_label = (">> " if is_default else "") + "קול ברירת מחדל"
     buttons = [[InlineKeyboardButton(default_label, callback_data="voice_select:default")]]
 
     for v in voices:
@@ -229,7 +230,7 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
 
     await update.message.reply_text(
-        "Select your active voice:\n(>> marks current)",
+        "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -243,14 +244,14 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data == "default":
         await set_active_voice(user_id, None)
-        await query.edit_message_text("Switched to Default Voice.")
+        await query.edit_message_text("עברת לקול ברירת המחדל.")
     else:
         voice = await get_voice_by_id(data)
         if not voice:
-            await query.edit_message_text("Voice not found.")
+            await query.edit_message_text("הקול לא נמצא.")
             return
         await set_active_voice(user_id, data)
-        await query.edit_message_text(f"Switched to: {voice['name']}")
+        await query.edit_message_text(f"עברת לקול: {voice['name']}")
 
 
 # ── /deletevoice — remove a custom voice ─────────────────────────────────────
@@ -263,15 +264,15 @@ async def cmd_deletevoice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     voices = await get_user_voices(user_id)
     if not voices:
-        await update.message.reply_text("You have no custom voices.")
+        await update.message.reply_text("אין לך קולות מותאמים.")
         return
 
     buttons = []
     for v in voices:
-        buttons.append([InlineKeyboardButton(f"Delete: {v['name']}", callback_data=f"voice_delete:{v['id']}")])
+        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}", callback_data=f"voice_delete:{v['id']}")])
 
     await update.message.reply_text(
-        "Which voice do you want to delete?",
+        "איזה קול למחוק?",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -284,7 +285,7 @@ async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
     deleted = await delete_voice(voice_doc_id)
 
     if not deleted:
-        await query.edit_message_text("Voice not found.")
+        await query.edit_message_text("הקול לא נמצא.")
         return
 
     delete_elevenlabs_voice(deleted["elevenlabs_voice_id"])
@@ -293,7 +294,7 @@ async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         logger.exception("Failed to delete S3 samples")
 
-    await query.edit_message_text("Voice deleted.")
+    await query.edit_message_text("הקול נמחק.")
 
 
 # ── /newvoice — create a cloned voice ────────────────────────────────────────
@@ -304,23 +305,24 @@ async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    await update.message.reply_text("What name do you want for this voice?")
+    await update.message.reply_text("איזה שם לתת לקול החדש?")
     return WAITING_NAME
 
 
 async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     name = update.message.text.strip()
     if not name:
-        await update.message.reply_text("Please send a name.")
+        await update.message.reply_text("שלח/י שם.")
         return WAITING_NAME
 
     context.user_data["new_voice_name"] = name
     context.user_data["new_voice_samples"] = []
 
     await update.message.reply_text(
-        f"Voice name: {name}\n\n"
-        "Now send me 1-5 voice recordings of this person speaking.\n"
-        "Send /done when finished, or /cancel to abort."
+        f"שם הקול: {name}\n\n"
+        f"עכשיו שלח/י 1-5 הקלטות קוליות של האדם הזה.\n"
+        f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+        "שלח/י /done בסיום, או /cancel לביטול."
     )
     return COLLECTING_SAMPLES
 
@@ -328,12 +330,19 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     voice = update.message.voice or update.message.audio
     if not voice:
-        await update.message.reply_text("Please send a voice recording, /done to finish, or /cancel to abort.")
+        await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
+        return COLLECTING_SAMPLES
+
+    if voice.duration and voice.duration < MIN_SAMPLE_DURATION:
+        await update.message.reply_text(
+            f"ההקלטה קצרה מדי ({voice.duration} שניות). "
+            f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות."
+        )
         return COLLECTING_SAMPLES
 
     samples = context.user_data.get("new_voice_samples", [])
     if len(samples) >= 5:
-        await update.message.reply_text("Maximum 5 samples. Send /done to finish.")
+        await update.message.reply_text("מקסימום 5 דגימות. שלח/י /done לסיום.")
         return COLLECTING_SAMPLES
 
     file = await context.bot.get_file(voice.file_id)
@@ -342,8 +351,8 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data["new_voice_samples"] = samples
 
     await update.message.reply_text(
-        f"Sample {len(samples)} received. "
-        f"Send more or /done to create the voice ({len(samples)}/5)."
+        f"דגימה {len(samples)} התקבלה. "
+        f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/5)."
     )
     return COLLECTING_SAMPLES
 
@@ -351,13 +360,13 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     samples = context.user_data.get("new_voice_samples", [])
-    name = context.user_data.get("new_voice_name", "Unnamed")
+    name = context.user_data.get("new_voice_name", "ללא שם")
 
     if not samples:
-        await update.message.reply_text("No samples received. Send at least one voice recording.")
+        await update.message.reply_text("לא התקבלו דגימות. שלח/י לפחות הקלטה אחת.")
         return COLLECTING_SAMPLES
 
-    await update.message.reply_text(f"Creating voice \"{name}\" from {len(samples)} sample(s)... This may take a moment.")
+    await update.message.reply_text(f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע.")
     await update.message.reply_chat_action("typing")
 
     try:
@@ -374,12 +383,12 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await set_active_voice(user_id, voice_doc_id)
 
         await update.message.reply_text(
-            f"Voice \"{name}\" created and set as active!\n"
-            "Use /voices to switch between voices."
+            f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
+            "השתמש/י ב-/voices כדי לעבור בין קולות."
         )
     except Exception:
         logger.exception("Voice creation failed")
-        await update.message.reply_text("Failed to create voice. Please try again.")
+        await update.message.reply_text("יצירת הקול נכשלה. נסה/י שוב.")
 
     context.user_data.pop("new_voice_name", None)
     context.user_data.pop("new_voice_samples", None)
@@ -389,7 +398,7 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("new_voice_name", None)
     context.user_data.pop("new_voice_samples", None)
-    await update.message.reply_text("Voice creation cancelled.")
+    await update.message.reply_text("יצירת הקול בוטלה.")
     return ConversationHandler.END
 
 
