@@ -196,6 +196,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         audio_data = text_to_speech(text, voice_id, audio_tag)
+        if not audio_data:
+            logger.warning("TTS returned empty audio, retrying without audio tag")
+            audio_data = text_to_speech(text, voice_id)
+        if not audio_data:
+            await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
+            return
         ogg_data = mp3_to_ogg_opus(audio_data)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
