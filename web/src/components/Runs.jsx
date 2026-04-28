@@ -1,13 +1,25 @@
 import { useState, useEffect } from "react";
-import { getRuns } from "../api";
+import { getRuns, getUsers } from "../api";
 
 export default function Runs() {
   const [runs, setRuns] = useState([]);
+  const [userMap, setUserMap] = useState({});
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function load(telegramId) {
+  async function loadUsers() {
+    try {
+      const users = await getUsers();
+      const map = {};
+      for (const u of users) {
+        map[u.telegram_id] = u.name || String(u.telegram_id);
+      }
+      setUserMap(map);
+    } catch {}
+  }
+
+  async function loadRuns(telegramId) {
     setLoading(true);
     setError("");
     try {
@@ -19,16 +31,23 @@ export default function Runs() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    loadUsers();
+    loadRuns();
+  }, []);
 
   function handleFilter(e) {
     e.preventDefault();
-    load(filter);
+    loadRuns(filter);
   }
 
   function formatDate(iso) {
     if (!iso) return "";
     return new Date(iso).toLocaleString();
+  }
+
+  function userName(telegramId) {
+    return userMap[telegramId] || String(telegramId);
   }
 
   return (
@@ -46,7 +65,7 @@ export default function Runs() {
             type="button"
             onClick={() => {
               setFilter("");
-              load();
+              loadRuns();
             }}
           >
             Clear
@@ -65,7 +84,7 @@ export default function Runs() {
           <thead>
             <tr>
               <th>Time</th>
-              <th>Telegram ID</th>
+              <th>User</th>
               <th>Type</th>
               <th>Text</th>
             </tr>
@@ -74,7 +93,7 @@ export default function Runs() {
             {runs.map((r, i) => (
               <tr key={i}>
                 <td className="nowrap">{formatDate(r.created_at)}</td>
-                <td>{r.telegram_id}</td>
+                <td>{userName(r.telegram_id)}</td>
                 <td>
                   <span className={`badge badge-${r.type}`}>
                     {r.type.toUpperCase()}
