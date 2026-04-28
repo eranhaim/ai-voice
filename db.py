@@ -24,6 +24,24 @@ async def is_authorized(telegram_id: int) -> bool:
     return user is not None
 
 
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+async def get_user_prompt(telegram_id: int) -> str | None:
+    db = get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    if not user:
+        return None
+    return user.get("audio_tag")
+
+
+async def set_user_prompt(telegram_id: int, audio_tag: str | None) -> None:
+    db = get_db()
+    await db.users.update_one(
+        {"telegram_id": telegram_id},
+        {"$set": {"audio_tag": audio_tag}},
+    )
+
+
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
 async def log_run(telegram_id: int, run_type: str, text: str) -> None:

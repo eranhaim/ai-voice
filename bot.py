@@ -22,6 +22,8 @@ from db import (
     is_authorized,
     log_run,
     get_user_voice_id,
+    get_user_prompt,
+    set_user_prompt,
     set_active_voice,
     create_voice,
     get_user_voices,
@@ -45,7 +47,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
+DEFAULT_AUDIO_TAG = "[flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
+
+WAITING_PROMPT = 10
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
@@ -62,9 +67,9 @@ def _get_openai() -> OpenAI:
 
 # ── ElevenLabs operations ────────────────────────────────────────────────────
 
-def text_to_speech(text: str, voice_id: str) -> bytes:
+def text_to_speech(text: str, voice_id: str, audio_tag: str = "") -> bytes:
     client = _get_elevenlabs()
-    tagged_text = "[flirty, speaking to a man] " + text
+    tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
@@ -154,6 +159,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/voices — בחירת קול פעיל\n"
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
+        "/prompt — הגדרת סגנון הדיבור\n"
     )
 
 
@@ -174,11 +180,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     voice_id = await get_user_voice_id(user_id)
+    audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
 
     try:
-        audio_data = text_to_speech(text, voice_id)
+        audio_data = text_to_speech(text, voice_id, audio_tag)
         ogg_data = mp3_to_ogg_opus(audio_data)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
@@ -418,6 +425,50 @@ async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
+# ── /prompt — edit audio tag ──────────────────────────────────────────────────
+
+async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return ConversationHandler.END
+
+    current = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
+    await update.message.reply_text(
+        f"סגנון הדיבור הנוכחי:\n{current}\n\n"
+        "שלח/י סגנון חדש, או /reset לחזרה לברירת מחדל, או /cancel לביטול.\n\n"
+        "דוגמאות:\n"
+        "[flirty, speaking to a man]\n"
+        "[warm, gentle, romantic]\n"
+        "[playful, teasing, seductive]"
+    )
+    return WAITING_PROMPT
+
+
+async def prompt_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    new_prompt = update.message.text.strip()
+    if not new_prompt:
+        await update.message.reply_text("שלח/י סגנון דיבור.")
+        return WAITING_PROMPT
+
+    await set_user_prompt(user_id, new_prompt)
+    await update.message.reply_text(f"סגנון הדיבור עודכן:\n{new_prompt}")
+    return ConversationHandler.END
+
+
+async def prompt_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    await set_user_prompt(user_id, None)
+    await update.message.reply_text(f"סגנון הדיבור חזר לברירת מחדל:\n{DEFAULT_AUDIO_TAG}")
+    return ConversationHandler.END
+
+
+async def prompt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("עריכת סגנון הדיבור בוטלה.")
+    return ConversationHandler.END
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -444,7 +495,19 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", newvoice_cancel)],
     )
 
+    prompt_conv = ConversationHandler(
+        entry_points=[CommandHandler("prompt", cmd_prompt)],
+        states={
+            WAITING_PROMPT: [
+                CommandHandler("reset", prompt_reset),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, prompt_set),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", prompt_cancel)],
+    )
+
     app.add_handler(newvoice_conv)
+    app.add_handler(prompt_conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("voices", cmd_voices))
