@@ -67,8 +67,18 @@ def _get_openai() -> OpenAI:
 
 # ── ElevenLabs operations ────────────────────────────────────────────────────
 
+def _ensure_brackets(tag: str) -> str:
+    tag = tag.strip()
+    if tag and not tag.startswith("["):
+        tag = "[" + tag
+    if tag and not tag.endswith("]"):
+        tag = tag + "]"
+    return tag
+
+
 def text_to_speech(text: str, voice_id: str, audio_tag: str = "") -> bytes:
     client = _get_elevenlabs()
+    audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
