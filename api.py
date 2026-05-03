@@ -107,9 +107,64 @@ async def delete_user(telegram_id: int, authorization: str | None = Header(defau
         raise HTTPException(status_code=404, detail="User not found")
 
 
-# ── Runs ──────────────────────────────────────────────────────────────────────
+# ── System Voices ─────────────────────────────────────────────────────────────
 
-# ── Voices ────────────────────────────────────────────────────────────────────
+class SystemVoiceIn(BaseModel):
+    name: str
+    elevenlabs_voice_id: str
+
+
+class SystemVoiceOut(BaseModel):
+    id: str
+    name: str
+    elevenlabs_voice_id: str
+
+
+@app.get("/api/system-voices", response_model=list[SystemVoiceOut])
+async def list_system_voices(authorization: str | None = Header(default=None)):
+    _require_auth(authorization)
+    db = get_db()
+    voices = []
+    async for doc in db.system_voices.find():
+        voices.append(SystemVoiceOut(
+            id=str(doc["_id"]),
+            name=doc["name"],
+            elevenlabs_voice_id=doc["elevenlabs_voice_id"],
+        ))
+    return voices
+
+
+@app.post("/api/system-voices", response_model=SystemVoiceOut, status_code=201)
+async def add_system_voice(body: SystemVoiceIn, authorization: str | None = Header(default=None)):
+    _require_auth(authorization)
+    db = get_db()
+
+    existing = await db.system_voices.find_one({"elevenlabs_voice_id": body.elevenlabs_voice_id})
+    if existing:
+        raise HTTPException(status_code=409, detail="Voice ID already exists")
+
+    result = await db.system_voices.insert_one({
+        "name": body.name,
+        "elevenlabs_voice_id": body.elevenlabs_voice_id,
+    })
+    return SystemVoiceOut(
+        id=str(result.inserted_id),
+        name=body.name,
+        elevenlabs_voice_id=body.elevenlabs_voice_id,
+    )
+
+
+@app.delete("/api/system-voices/{voice_id}", status_code=204)
+async def delete_system_voice(voice_id: str, authorization: str | None = Header(default=None)):
+    _require_auth(authorization)
+    db = get_db()
+    from bson import ObjectId
+    result = await db.system_voices.delete_one({"_id": ObjectId(voice_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Voice not found")
+
+
+# ── Custom Voices ────────────────────────────────────────────────────────────
 
 class VoiceOut(BaseModel):
     telegram_id: int

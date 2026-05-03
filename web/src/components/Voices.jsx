@@ -1,17 +1,21 @@
 import { useState, useEffect } from "react";
-import { getVoices } from "../api";
+import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices } from "../api";
 
 export default function Voices() {
-  const [voices, setVoices] = useState([]);
-  const [filter, setFilter] = useState("");
+  const [systemVoices, setSystemVoices] = useState([]);
+  const [customVoices, setCustomVoices] = useState([]);
+  const [voiceId, setVoiceId] = useState("");
+  const [voiceName, setVoiceName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function load(telegramId) {
+  async function load() {
     setLoading(true);
     setError("");
     try {
-      setVoices(await getVoices(telegramId || null));
+      const [sv, cv] = await Promise.all([getSystemVoices(), getVoices()]);
+      setSystemVoices(sv);
+      setCustomVoices(cv);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -21,9 +25,28 @@ export default function Voices() {
 
   useEffect(() => { load(); }, []);
 
-  function handleFilter(e) {
+  async function handleAdd(e) {
     e.preventDefault();
-    load(filter);
+    setError("");
+    if (!voiceId || !voiceName) return;
+    try {
+      await addSystemVoice(voiceName, voiceId);
+      setVoiceId("");
+      setVoiceName("");
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function handleDelete(id, name) {
+    if (!confirm(`Delete system voice "${name}"?`)) return;
+    try {
+      await deleteSystemVoice(id);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   function formatDate(iso) {
@@ -31,35 +54,66 @@ export default function Voices() {
     return new Date(iso).toLocaleString();
   }
 
+  if (loading) return <p className="loading">Loading...</p>;
+
   return (
     <div>
-      <form onSubmit={handleFilter} className="filter-form">
+      <h3 style={{ marginBottom: "1rem", color: "#f0f3f6" }}>System Voices</h3>
+
+      <form onSubmit={handleAdd} className="add-form">
         <input
-          type="number"
-          placeholder="Filter by Telegram ID"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          type="text"
+          placeholder="ElevenLabs Voice ID"
+          value={voiceId}
+          onChange={(e) => setVoiceId(e.target.value)}
+          required
         />
-        <button type="submit">Filter</button>
-        {filter && (
-          <button
-            type="button"
-            onClick={() => {
-              setFilter("");
-              load();
-            }}
-          >
-            Clear
-          </button>
-        )}
+        <input
+          type="text"
+          placeholder="Voice Name"
+          value={voiceName}
+          onChange={(e) => setVoiceName(e.target.value)}
+          required
+        />
+        <button type="submit">Add Voice</button>
       </form>
 
       {error && <p className="error">{error}</p>}
 
-      {loading ? (
-        <p className="loading">Loading...</p>
-      ) : voices.length === 0 ? (
-        <p className="empty">No cloned voices yet.</p>
+      {systemVoices.length === 0 ? (
+        <p className="empty">No system voices.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ElevenLabs Voice ID</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {systemVoices.map((v) => (
+              <tr key={v.id}>
+                <td>{v.name}</td>
+                <td className="text-cell">{v.elevenlabs_voice_id}</td>
+                <td>
+                  <button
+                    className="btn-delete"
+                    onClick={() => handleDelete(v.id, v.name)}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3 style={{ margin: "2rem 0 1rem", color: "#f0f3f6" }}>Custom Voices (user-created)</h3>
+
+      {customVoices.length === 0 ? (
+        <p className="empty">No custom voices yet.</p>
       ) : (
         <table>
           <thead>
@@ -71,7 +125,7 @@ export default function Voices() {
             </tr>
           </thead>
           <tbody>
-            {voices.map((v, i) => (
+            {customVoices.map((v, i) => (
               <tr key={i}>
                 <td>{v.name}</td>
                 <td>{v.telegram_id}</td>

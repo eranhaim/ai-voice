@@ -68,3 +68,30 @@ export async function getVoices(telegramId) {
   if (res.status === 401) throw new Error("Unauthorized");
   return res.json();
 }
+
+export async function getSystemVoices() {
+  const res = await fetch(`${BASE}/system-voices`, { headers: headers() });
+  if (res.status === 401) throw new Error("Unauthorized");
+  return res.json();
+}
+
+export async function addSystemVoice(name, elevenlabs_voice_id) {
+  const res = await fetch(`${BASE}/system-voices`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ name, elevenlabs_voice_id }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to add voice");
+  }
+  return res.json();
+}
+
+export async function deleteSystemVoice(id) {
+  const res = await fetch(`${BASE}/system-voices/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+  if (!res.ok) throw new Error("Failed to delete voice");
+}
