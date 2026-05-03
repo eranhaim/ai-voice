@@ -6,7 +6,16 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 _client: AsyncIOMotorClient | None = None
 
-DEFAULT_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+SYSTEM_VOICES = [
+    {"name": "הקול המפתה של נופר", "elevenlabs_voice_id": "jqcCZkN6Knx8BJ5TBdYR"},
+    {"name": "הקול השכונתי של ליטל", "elevenlabs_voice_id": "Wim44P0dU9HtjyzNnFsv"},
+    {"name": "הקול הצעיר של ליה", "elevenlabs_voice_id": "RSyLgiJaZVhD3kdzAKTD"},
+    {"name": "הקול הלחשני של רומי", "elevenlabs_voice_id": "K8lgMMdmFr7QoEooafEf"},
+    {"name": "הקול המעצבן של מאיה", "elevenlabs_voice_id": "Sm1seazb4gs7RSlUVw7c"},
+    {"name": "הקול המאופק של אגם", "elevenlabs_voice_id": "flHkNRp1BlvT73UL6gyz"},
+]
+
+DEFAULT_VOICE_ID = SYSTEM_VOICES[0]["elevenlabs_voice_id"]
 
 
 def get_db():
@@ -14,6 +23,30 @@ def get_db():
     if _client is None:
         _client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
     return _client[os.getenv("MONGO_DB", "voice_bot")]
+
+
+# ── System voices ─────────────────────────────────────────────────────────────
+
+async def seed_system_voices() -> None:
+    db = get_db()
+    for sv in SYSTEM_VOICES:
+        await db.system_voices.update_one(
+            {"elevenlabs_voice_id": sv["elevenlabs_voice_id"]},
+            {"$set": sv},
+            upsert=True,
+        )
+
+
+async def get_system_voices() -> list[dict]:
+    db = get_db()
+    voices = []
+    async for doc in db.system_voices.find():
+        voices.append({
+            "id": str(doc["_id"]),
+            "name": doc["name"],
+            "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
+        })
+    return voices
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -63,7 +96,10 @@ async def get_user_voice_id(telegram_id: int) -> str:
     if not user or not user.get("active_voice_id"):
         return DEFAULT_VOICE_ID
 
-    voice = await db.voices.find_one({"_id": user["active_voice_id"]})
+    vid = user["active_voice_id"]
+    voice = await db.system_voices.find_one({"_id": vid})
+    if not voice:
+        voice = await db.voices.find_one({"_id": vid})
     if not voice:
         return DEFAULT_VOICE_ID
     return voice["elevenlabs_voice_id"]
@@ -112,12 +148,15 @@ async def get_user_voices(telegram_id: int) -> list[dict]:
 
 async def get_voice_by_id(voice_doc_id: str) -> dict | None:
     db = get_db()
-    doc = await db.voices.find_one({"_id": ObjectId(voice_doc_id)})
+    oid = ObjectId(voice_doc_id)
+    doc = await db.system_voices.find_one({"_id": oid})
+    if not doc:
+        doc = await db.voices.find_one({"_id": oid})
     if not doc:
         return None
     return {
         "id": str(doc["_id"]),
-        "telegram_id": doc["telegram_id"],
+        "telegram_id": doc.get("telegram_id"),
         "name": doc["name"],
         "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
         "sample_urls": doc.get("sample_urls", []),

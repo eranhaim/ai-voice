@@ -29,6 +29,8 @@ from db import (
     get_user_voices,
     get_voice_by_id,
     delete_voice,
+    get_system_voices,
+    seed_system_voices,
 )
 from s3 import upload_sample, delete_samples
 
@@ -41,7 +43,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-DEFAULT_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 TTS_MODEL = "eleven_v3"
@@ -257,13 +258,16 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     current_voice_id = await get_user_voice_id(user_id)
-    voices = await get_user_voices(user_id)
+    system_voices = await get_system_voices()
+    custom_voices = await get_user_voices(user_id)
 
-    is_default = current_voice_id == DEFAULT_VOICE_ID
-    default_label = (">> " if is_default else "") + "קול ברירת מחדל"
-    buttons = [[InlineKeyboardButton(default_label, callback_data="voice_select:default")]]
+    buttons = []
+    for sv in system_voices:
+        is_active = sv["elevenlabs_voice_id"] == current_voice_id
+        label = (">> " if is_active else "") + sv["name"]
+        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
 
-    for v in voices:
+    for v in custom_voices:
         is_active = v["elevenlabs_voice_id"] == current_voice_id
         label = (">> " if is_active else "") + v["name"]
         buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
@@ -281,16 +285,12 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     data = query.data.replace("voice_select:", "")
 
-    if data == "default":
-        await set_active_voice(user_id, None)
-        await query.edit_message_text("עברת לקול ברירת המחדל.")
-    else:
-        voice = await get_voice_by_id(data)
-        if not voice:
-            await query.edit_message_text("הקול לא נמצא.")
-            return
-        await set_active_voice(user_id, data)
-        await query.edit_message_text(f"עברת לקול: {voice['name']}")
+    voice = await get_voice_by_id(data)
+    if not voice:
+        await query.edit_message_text("הקול לא נמצא.")
+        return
+    await set_active_voice(user_id, data)
+    await query.edit_message_text(f"עברת לקול: {voice['name']}")
 
 
 # ── /deletevoice — remove a custom voice ─────────────────────────────────────
@@ -487,6 +487,11 @@ async def prompt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+async def post_init(application) -> None:
+    await seed_system_voices()
+    logger.info("System voices seeded")
+
+
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -497,7 +502,7 @@ def main() -> None:
         print("ELEVENLABS_API_KEY not found in .env")
         return
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(post_init).build()
 
     newvoice_conv = ConversationHandler(
         entry_points=[CommandHandler("newvoice", newvoice_start)],
@@ -533,7 +538,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print(f"Bot started — default voice: {DEFAULT_VOICE_ID}")
+    print("Bot started")
     print(f"  Text -> TTS ({TTS_MODEL})")
     print(f"  Voice -> STS ({STS_MODEL})")
     print("Ready.")
