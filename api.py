@@ -2,14 +2,20 @@ import os
 import secrets
 from datetime import datetime, timezone
 
+import httpx
+from bson import ObjectId
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from db import get_db
+from s3 import _get_client as get_s3_client
 
 load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "5060049285")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 
@@ -203,6 +209,8 @@ class RunOut(BaseModel):
     type: str
     text: str
     voice_name: str
+    has_audio: bool
+    run_id: str
     created_at: str
 
 
@@ -226,6 +234,42 @@ async def list_runs(
             type=doc["type"],
             text=doc.get("text", ""),
             voice_name=doc.get("voice_name", ""),
+            has_audio=bool(doc.get("input_audio_url")),
+            run_id=str(doc["_id"]),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
         ))
     return runs
+
+
+@app.post("/api/runs/{run_id}/resend", status_code=200)
+async def resend_audio(run_id: str, authorization: str | None = Header(default=None)):
+    _require_auth(authorization)
+    db = get_db()
+
+    doc = await db.runs.find_one({"_id": ObjectId(run_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    audio_url = doc.get("input_audio_url")
+    if not audio_url:
+        raise HTTPException(status_code=404, detail="No input audio saved for this run")
+
+    parts = audio_url.replace("s3://", "").split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=500, detail="Invalid audio URL")
+
+    bucket, key = parts
+    s3 = get_s3_client()
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    audio_bytes = obj["Body"].read()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice",
+            data={"chat_id": ADMIN_TELEGRAM_ID},
+            files={"voice": ("input.ogg", audio_bytes, "audio/ogg")},
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to send to Telegram")
+
+    return {"status": "sent"}

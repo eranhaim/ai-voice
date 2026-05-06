@@ -326,6 +326,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         audio_data = await file.download_as_bytearray()
         audio_bytes = bytes(audio_data)
 
+        input_audio_url = ""
+        try:
+            filename = f"input_{uuid.uuid4().hex}.ogg"
+            input_audio_url = upload_sample(user_id, filename, audio_bytes)
+        except Exception:
+            logger.exception("Failed to save input audio to S3")
+
         transcription = ""
         try:
             transcription = transcribe(audio_bytes)
@@ -338,7 +345,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "sts", transcription, vname)
+        await log_run(user_id, "sts", transcription, vname, input_audio_url)
     except Exception:
         logger.exception("STS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")

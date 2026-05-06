@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getRuns, getUsers } from "../api";
+import { getRuns, getUsers, resendAudio } from "../api";
 
 export default function Runs() {
   const [runs, setRuns] = useState([]);
@@ -7,6 +7,7 @@ export default function Runs() {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [sending, setSending] = useState(null);
 
   async function loadUsers() {
     try {
@@ -50,6 +51,18 @@ export default function Runs() {
     return userMap[telegramId] || String(telegramId);
   }
 
+  async function handleResend(runId) {
+    setSending(runId);
+    try {
+      await resendAudio(runId);
+      alert("Sent to your Telegram!");
+    } catch (e) {
+      alert("Failed: " + e.message);
+    } finally {
+      setSending(null);
+    }
+  }
+
   return (
     <div>
       <form onSubmit={handleFilter} className="filter-form">
@@ -88,6 +101,7 @@ export default function Runs() {
               <th>Type</th>
               <th>Voice</th>
               <th>Text</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -102,6 +116,17 @@ export default function Runs() {
                 </td>
                 <td>{r.voice_name || "—"}</td>
                 <td className="text-cell">{r.text}</td>
+                <td>
+                  {r.has_audio && (
+                    <button
+                      onClick={() => handleResend(r.run_id)}
+                      disabled={sending === r.run_id}
+                      style={{ fontSize: "0.8rem", padding: "0.3rem 0.6rem" }}
+                    >
+                      {sending === r.run_id ? "..." : "Send to TG"}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -69,6 +69,18 @@ export async function getVoices(telegramId) {
   return res.json();
 }
 
+export async function resendAudio(runId) {
+  const res = await fetch(`${BASE}/runs/${runId}/resend`, {
+    method: "POST",
+    headers: headers(),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Failed to resend");
+  }
+  return res.json();
+}
+
 export async function getSystemVoices() {
   const res = await fetch(`${BASE}/system-voices`, { headers: headers() });
   if (res.status === 401) throw new Error("Unauthorized");
