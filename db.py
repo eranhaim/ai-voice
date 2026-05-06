@@ -93,14 +93,28 @@ async def set_user_prompt(telegram_id: int, audio_tag: str | None) -> None:
     )
 
 
+async def get_voice_name(telegram_id: int) -> str:
+    """Get the name of the user's active voice."""
+    db = get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    if not user or not user.get("active_voice_id"):
+        return "Default"
+    vid = user["active_voice_id"]
+    voice = await db.system_voices.find_one({"_id": vid})
+    if not voice:
+        voice = await db.voices.find_one({"_id": vid})
+    return voice["name"] if voice else "Default"
+
+
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
-async def log_run(telegram_id: int, run_type: str, text: str) -> None:
+async def log_run(telegram_id: int, run_type: str, text: str, voice_name: str = "") -> None:
     db = get_db()
     await db.runs.insert_one({
         "telegram_id": telegram_id,
         "type": run_type,
         "text": text,
+        "voice_name": voice_name,
         "created_at": datetime.now(timezone.utc),
     })
 

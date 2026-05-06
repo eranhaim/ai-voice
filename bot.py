@@ -22,6 +22,7 @@ from db import (
     is_authorized,
     log_run,
     get_user_voice_id,
+    get_voice_name,
     get_user_prompt,
     set_user_prompt,
     get_user_effect,
@@ -105,7 +106,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 1.0, "style": 0.3}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 1.0, "style": 0.0}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -262,6 +263,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     voice_id = await get_user_voice_id(user_id)
+    vname = await get_voice_name(user_id)
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     effect = await get_user_effect(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
@@ -278,7 +280,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         ogg_data = process_audio_with_effect(audio_data, effect)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "tts", text)
+        await log_run(user_id, "tts", text, vname)
     except Exception:
         logger.exception("TTS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -295,6 +297,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     voice_id = await get_user_voice_id(user_id)
+    vname = await get_voice_name(user_id)
     effect = await get_user_effect(user_id)
     logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
@@ -316,7 +319,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "sts", transcription)
+        await log_run(user_id, "sts", transcription, vname)
     except Exception:
         logger.exception("STS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -677,7 +680,8 @@ async def handle_dialogue_text(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info("Dialogue done: %d turns, %d bytes", len(turns), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
         dialogue_text = " | ".join(f"{t['text']}" for t in turns)
-        await log_run(user_id, "dialogue", dialogue_text)
+        voice_names = ", ".join(v["name"] for v in voices)
+        await log_run(user_id, "dialogue", dialogue_text, voice_names)
     except Exception:
         logger.exception("Dialogue generation failed")
         await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")

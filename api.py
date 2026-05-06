@@ -202,6 +202,7 @@ class RunOut(BaseModel):
     telegram_id: int
     type: str
     text: str
+    voice_name: str
     created_at: str
 
 
@@ -224,6 +225,7 @@ async def list_runs(
             telegram_id=doc["telegram_id"],
             type=doc["type"],
             text=doc.get("text", ""),
+            voice_name=doc.get("voice_name", ""),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
         ))
     return runs

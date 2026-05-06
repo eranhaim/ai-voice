@@ -86,6 +86,7 @@ export default function Runs() {
               <th>Time</th>
               <th>User</th>
               <th>Type</th>
+              <th>Voice</th>
               <th>Text</th>
             </tr>
           </thead>
@@ -99,6 +100,7 @@ export default function Runs() {
                     {r.type.toUpperCase()}
                   </span>
                 </td>
+                <td>{r.voice_name || "—"}</td>
                 <td className="text-cell">{r.text}</td>
               </tr>
             ))}
