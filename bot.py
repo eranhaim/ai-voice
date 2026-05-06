@@ -103,7 +103,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.6, "similarity_boost": 0.95, "style": 0.6}',
+        voice_settings='{"stability": 0.6, "similarity_boost": 0.95, "style": 0.3}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -293,8 +293,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.exception("Transcription failed, continuing with voice conversion")
 
         converted = speech_to_speech(audio_bytes, voice_id)
+        logger.info("STS pass 1: %d bytes", len(converted))
+        converted = speech_to_speech(converted, voice_id)
+        logger.info("STS pass 2: %d bytes", len(converted))
         ogg_data = process_audio_with_effect(converted, effect)
-        logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
+        logger.info("STS done: %d bytes ogg", len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
         await log_run(user_id, "sts", transcription)
