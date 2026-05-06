@@ -360,7 +360,7 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     await update.message.reply_text(
         f"שם הקול: {name}\n\n"
-        f"עכשיו שלח/י 1-5 הקלטות קוליות של האדם הזה.\n"
+        "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
         f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
         "שלח/י /done בסיום, או /cancel לביטול."
     )
@@ -381,10 +381,6 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return COLLECTING_SAMPLES
 
     samples = context.user_data.get("new_voice_samples", [])
-    if len(samples) >= 5:
-        await update.message.reply_text("מקסימום 5 דגימות. שלח/י /done לסיום.")
-        return COLLECTING_SAMPLES
-
     file = await context.bot.get_file(voice.file_id)
     data = await file.download_as_bytearray()
     samples.append(bytes(data))
@@ -392,7 +388,7 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await update.message.reply_text(
         f"דגימה {len(samples)} התקבלה. "
-        f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/5)."
+        f"שלח/י עוד או /done ליצירת הקול ({len(samples)} דגימות)."
     )
     return COLLECTING_SAMPLES
 
