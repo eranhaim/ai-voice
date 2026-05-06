@@ -57,6 +57,24 @@ async def is_authorized(telegram_id: int) -> bool:
     return user is not None
 
 
+# ── Effects ───────────────────────────────────────────────────────────────────
+
+async def get_user_effect(telegram_id: int) -> str | None:
+    db = get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    if not user:
+        return None
+    return user.get("sound_effect")
+
+
+async def set_user_effect(telegram_id: int, effect: str | None) -> None:
+    db = get_db()
+    await db.users.update_one(
+        {"telegram_id": telegram_id},
+        {"$set": {"sound_effect": effect}},
+    )
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 async def get_user_prompt(telegram_id: int) -> str | None:

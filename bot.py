@@ -24,6 +24,8 @@ from db import (
     get_user_voice_id,
     get_user_prompt,
     set_user_prompt,
+    get_user_effect,
+    set_user_effect,
     set_active_voice,
     create_voice,
     get_user_voices,
@@ -144,6 +146,38 @@ def delete_elevenlabs_voice(voice_id: str) -> None:
         logger.exception("Failed to delete voice %s from ElevenLabs", voice_id)
 
 
+def generate_sound_effect(description: str, duration: float = 10.0) -> bytes:
+    client = _get_elevenlabs()
+    audio_iter = client.text_to_sound_effects.convert(
+        text=description,
+        duration_seconds=duration,
+    )
+    buffer = BytesIO()
+    for chunk in audio_iter:
+        buffer.write(chunk)
+    return buffer.getvalue()
+
+
+def mix_voice_with_effect(voice_bytes: bytes, effect_bytes: bytes) -> bytes:
+    """Mix voice audio with background sound effect using ffmpeg. Effect plays at lower volume."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-i", "pipe:0",
+            "-i", "/tmp/_effect.mp3",
+            "-filter_complex",
+            "[1:a]volume=0.15,apad[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2",
+            "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", "pipe:1",
+        ],
+        input=voice_bytes,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        logger.error("ffmpeg mix failed: %s", result.stderr.decode()[:200])
+        return mp3_to_ogg_opus(voice_bytes)
+    return result.stdout
+
+
 def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
     result = subprocess.run(
         ["ffmpeg", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", "pipe:1"],
@@ -154,6 +188,21 @@ def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
         logger.error("ffmpeg failed: %s", result.stderr.decode()[:200])
         return mp3_bytes
     return result.stdout
+
+
+def process_audio_with_effect(voice_bytes: bytes, effect_description: str | None) -> bytes:
+    """Convert voice to OGG, optionally mixing in a background sound effect."""
+    if not effect_description:
+        return mp3_to_ogg_opus(voice_bytes)
+
+    try:
+        effect_bytes = generate_sound_effect(effect_description, duration=15.0)
+        with open("/tmp/_effect.mp3", "wb") as f:
+            f.write(effect_bytes)
+        return mix_voice_with_effect(voice_bytes, effect_bytes)
+    except Exception:
+        logger.exception("Sound effect generation/mixing failed, returning voice only")
+        return mp3_to_ogg_opus(voice_bytes)
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -172,6 +221,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
+        "/effects — הוספת אפקט קולי ברקע\n"
+        "/noeffects — הסרת אפקט הרקע\n"
     )
 
 
@@ -193,6 +244,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     voice_id = await get_user_voice_id(user_id)
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
+    effect = await get_user_effect(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
 
@@ -204,7 +256,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not audio_data:
             await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
             return
-        ogg_data = mp3_to_ogg_opus(audio_data)
+        ogg_data = process_audio_with_effect(audio_data, effect)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
         await log_run(user_id, "tts", text)
@@ -224,6 +276,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     voice_id = await get_user_voice_id(user_id)
+    effect = await get_user_effect(user_id)
     logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
 
@@ -240,7 +293,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.exception("Transcription failed, continuing with voice conversion")
 
         converted = speech_to_speech(audio_bytes, voice_id)
-        ogg_data = mp3_to_ogg_opus(converted)
+        ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
@@ -482,6 +535,58 @@ async def prompt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
+# ── /effects — background sound effects ───────────────────────────────────────
+
+WAITING_EFFECT = 11
+
+
+async def cmd_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return ConversationHandler.END
+
+    current = await get_user_effect(user_id)
+    status = f"אפקט נוכחי: {current}" if current else "אין אפקט רקע פעיל."
+    await update.message.reply_text(
+        f"{status}\n\n"
+        "שלח/י תיאור של אפקט הרקע באנגלית, או /cancel לביטול.\n\n"
+        "דוגמאות:\n"
+        "shower water running\n"
+        "loud club music with bass\n"
+        "dogs barking in background\n"
+        "rain and thunder\n"
+        "busy cafe ambient noise"
+    )
+    return WAITING_EFFECT
+
+
+async def effect_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    effect = update.message.text.strip()
+    if not effect:
+        await update.message.reply_text("שלח/י תיאור של אפקט.")
+        return WAITING_EFFECT
+
+    await set_user_effect(user_id, effect)
+    await update.message.reply_text(f"אפקט רקע הוגדר: {effect}")
+    return ConversationHandler.END
+
+
+async def effect_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("הגדרת אפקט בוטלה.")
+    return ConversationHandler.END
+
+
+async def cmd_noeffects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return
+    await set_user_effect(user_id, None)
+    await update.message.reply_text("אפקט הרקע הוסר.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def post_init(application) -> None:
@@ -524,10 +629,22 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", prompt_cancel)],
     )
 
+    effects_conv = ConversationHandler(
+        entry_points=[CommandHandler("effects", cmd_effects)],
+        states={
+            WAITING_EFFECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, effect_set),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", effect_cancel)],
+    )
+
     app.add_handler(newvoice_conv)
     app.add_handler(prompt_conv)
+    app.add_handler(effects_conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
+    app.add_handler(CommandHandler("noeffects", cmd_noeffects))
     app.add_handler(CommandHandler("voices", cmd_voices))
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
