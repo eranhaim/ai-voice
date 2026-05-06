@@ -57,6 +57,7 @@ MIN_SAMPLE_DURATION = 5
 WAITING_PROMPT = 10
 WAITING_EFFECT = 11
 SELECTING_DIALOGUE_VOICES, WRITING_DIALOGUE = 12, 13
+SELECTING_ENHANCE_VOICE, WRITING_ENHANCE_PROMPT, CONFIRMING_ENHANCE = 14, 15, 16
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
@@ -106,7 +107,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.3}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.0}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -163,6 +164,23 @@ def generate_dialogue(turns: list[dict]) -> bytes:
     for chunk in audio_iter:
         buffer.write(chunk)
     return buffer.getvalue()
+
+
+def remix_voice(voice_id: str, prompt: str, preview_text: str = "שלום, מה שלומך היום? אני כל כך שמחה לדבר איתך.") -> list[dict]:
+    """Remix a voice and return list of previews [{generated_voice_id, audio_base64}]."""
+    client = _get_elevenlabs()
+    result = client.text_to_voice.remix(
+        voice_id=voice_id,
+        voice_description=prompt,
+        text=preview_text,
+    )
+    previews = []
+    for voice in result.previews:
+        previews.append({
+            "generated_voice_id": voice.generated_voice_id,
+            "audio_base64": voice.audio_base_64,
+        })
+    return previews
 
 
 def generate_sound_effect(description: str, duration: float = 10.0) -> bytes:
@@ -240,6 +258,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
+        "/enhance — שיפור קול קיים עם הנחיה\n"
         "/dialogue — יצירת שיחה עם מספר קולות\n"
         "/effects — הוספת אפקט קולי ברקע\n"
         "/noeffects — הסרת אפקט הרקע\n"
@@ -700,6 +719,150 @@ async def dialogue_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
+# ── /enhance — remix a voice with a prompt ────────────────────────────────────
+
+async def cmd_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return ConversationHandler.END
+
+    custom_voices = await get_user_voices(user_id)
+    if not custom_voices:
+        await update.message.reply_text(
+            "אין לך קולות מותאמים לשיפור.\n"
+            "צור/י קול חדש עם /newvoice קודם."
+        )
+        return ConversationHandler.END
+
+    buttons = []
+    for v in custom_voices:
+        buttons.append([InlineKeyboardButton(v["name"], callback_data=f"enhance_pick:{v['id']}")])
+
+    await update.message.reply_text(
+        "בחר/י קול לשיפור:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return SELECTING_ENHANCE_VOICE
+
+
+async def handle_enhance_voice_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    voice_doc_id = query.data.replace("enhance_pick:", "")
+    voice = await get_voice_by_id(voice_doc_id)
+    if not voice:
+        await query.edit_message_text("הקול לא נמצא.")
+        return ConversationHandler.END
+
+    context.user_data["enhance_voice"] = voice
+    await query.edit_message_text(
+        f"קול נבחר: {voice['name']}\n\n"
+        "כתוב/י הנחיה באנגלית לשיפור הקול.\n\n"
+        "דוגמאות:\n"
+        "Make sure she always speaks in Israeli accent.\n"
+        "Make the voice warmer and more intimate.\n"
+        "Add a slight raspy quality to the voice.\n"
+        "Make the pitch slightly higher.\n\n"
+        "שלח/י /cancel לביטול."
+    )
+    return WRITING_ENHANCE_PROMPT
+
+
+async def handle_enhance_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    prompt = update.message.text.strip()
+    if not prompt:
+        await update.message.reply_text("שלח/י הנחיה לשיפור.")
+        return WRITING_ENHANCE_PROMPT
+
+    voice = context.user_data.get("enhance_voice")
+    if not voice:
+        await update.message.reply_text("שגיאה. נסה/י שוב עם /enhance")
+        return ConversationHandler.END
+
+    await update.message.reply_text(f"משפר את \"{voice['name']}\"... זה עלול לקחת רגע.")
+    await update.message.reply_chat_action("typing")
+
+    try:
+        previews = remix_voice(voice["elevenlabs_voice_id"], prompt)
+        if not previews:
+            await update.message.reply_text("השיפור לא הצליח. נסה/י הנחיה אחרת.")
+            return ConversationHandler.END
+
+        context.user_data["enhance_previews"] = previews
+        context.user_data["enhance_prompt"] = prompt
+
+        import base64
+        for i, p in enumerate(previews):
+            audio_bytes = base64.b64decode(p["audio_base64"])
+            ogg = mp3_to_ogg_opus(audio_bytes)
+            await update.message.reply_voice(voice=ogg, caption=f"גרסה {i+1}")
+
+        buttons = []
+        for i in range(len(previews)):
+            buttons.append([InlineKeyboardButton(f"שמור גרסה {i+1}", callback_data=f"enhance_save:{i}")])
+        buttons.append([InlineKeyboardButton("ביטול", callback_data="enhance_save:cancel")])
+
+        await update.message.reply_text(
+            "בחר/י את הגרסה שאהבת:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return CONFIRMING_ENHANCE
+
+    except Exception:
+        logger.exception("Voice enhance failed")
+        await update.message.reply_text("השיפור נכשל. נסה/י שוב.")
+        return ConversationHandler.END
+
+
+async def handle_enhance_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.replace("enhance_save:", "")
+    if data == "cancel":
+        await query.edit_message_text("השיפור בוטל.")
+        context.user_data.pop("enhance_voice", None)
+        context.user_data.pop("enhance_previews", None)
+        context.user_data.pop("enhance_prompt", None)
+        return ConversationHandler.END
+
+    idx = int(data)
+    previews = context.user_data.get("enhance_previews", [])
+    original_voice = context.user_data.get("enhance_voice", {})
+    prompt = context.user_data.get("enhance_prompt", "")
+
+    if idx >= len(previews):
+        await query.edit_message_text("גרסה לא נמצאה.")
+        return ConversationHandler.END
+
+    new_voice_id = previews[idx]["generated_voice_id"]
+    user_id = query.from_user.id
+    new_name = f"{original_voice.get('name', 'Enhanced')} (enhanced)"
+
+    voice_doc_id = await create_voice(user_id, new_name, new_voice_id, [])
+    await set_active_voice(user_id, voice_doc_id)
+
+    await query.edit_message_text(
+        f"הקול \"{new_name}\" נשמר והוגדר כפעיל!\n"
+        "השתמש/י ב-/voices כדי לעבור בין קולות."
+    )
+
+    context.user_data.pop("enhance_voice", None)
+    context.user_data.pop("enhance_previews", None)
+    context.user_data.pop("enhance_prompt", None)
+    return ConversationHandler.END
+
+
+async def enhance_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("enhance_voice", None)
+    context.user_data.pop("enhance_previews", None)
+    context.user_data.pop("enhance_prompt", None)
+    await update.message.reply_text("השיפור בוטל.")
+    return ConversationHandler.END
+
+
 # ── /effects — background sound effects ───────────────────────────────────────
 
 async def cmd_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -814,10 +977,27 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", dialogue_cancel)],
     )
 
+    enhance_conv = ConversationHandler(
+        entry_points=[CommandHandler("enhance", cmd_enhance)],
+        states={
+            SELECTING_ENHANCE_VOICE: [
+                CallbackQueryHandler(handle_enhance_voice_pick, pattern=r"^enhance_pick:"),
+            ],
+            WRITING_ENHANCE_PROMPT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_enhance_prompt),
+            ],
+            CONFIRMING_ENHANCE: [
+                CallbackQueryHandler(handle_enhance_save, pattern=r"^enhance_save:"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", enhance_cancel)],
+    )
+
     app.add_handler(newvoice_conv)
     app.add_handler(prompt_conv)
     app.add_handler(effects_conv)
     app.add_handler(dialogue_conv)
+    app.add_handler(enhance_conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
