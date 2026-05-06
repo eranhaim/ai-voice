@@ -35,7 +35,7 @@ from db import (
     get_system_voices,
     seed_system_voices,
 )
-from s3 import upload_sample, delete_samples
+from s3 import upload_sample, upload_run_audio, delete_samples
 
 load_dotenv()
 
@@ -329,7 +329,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         input_audio_url = ""
         try:
             filename = f"input_{uuid.uuid4().hex}.ogg"
-            input_audio_url = upload_sample(user_id, filename, audio_bytes)
+            input_audio_url = upload_run_audio(user_id, filename, audio_bytes)
         except Exception:
             logger.exception("Failed to save input audio to S3")
 

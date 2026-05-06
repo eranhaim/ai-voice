@@ -24,6 +24,13 @@ def upload_sample(telegram_id: int, filename: str, audio_bytes: bytes) -> str:
     return f"s3://{bucket}/{key}"
 
 
+def upload_run_audio(telegram_id: int, filename: str, audio_bytes: bytes) -> str:
+    bucket = os.getenv("AWS_S3_BUCKET")
+    key = f"runs/{telegram_id}/{filename}"
+    _get_client().put_object(Bucket=bucket, Key=key, Body=audio_bytes)
+    return f"s3://{bucket}/{key}"
+
+
 def delete_samples(urls: list[str]) -> None:
     client = _get_client()
     for url in urls:
