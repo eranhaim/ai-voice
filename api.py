@@ -243,6 +243,9 @@ async def list_runs(
 
 @app.post("/api/runs/{run_id}/resend", status_code=200)
 async def resend_audio(run_id: str, authorization: str | None = Header(default=None)):
+    import logging
+    logger = logging.getLogger(__name__)
+
     _require_auth(authorization)
     db = get_db()
 
@@ -254,22 +257,28 @@ async def resend_audio(run_id: str, authorization: str | None = Header(default=N
     if not audio_url:
         raise HTTPException(status_code=404, detail="No input audio saved for this run")
 
-    parts = audio_url.replace("s3://", "").split("/", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=500, detail="Invalid audio URL")
+    try:
+        parts = audio_url.replace("s3://", "").split("/", 1)
+        bucket, key = parts[0], parts[1]
 
-    bucket, key = parts
-    s3 = get_s3_client()
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    audio_bytes = obj["Body"].read()
+        s3 = get_s3_client()
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        audio_bytes = obj["Body"].read()
+        logger.info("Fetched %d bytes from S3", len(audio_bytes))
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice",
-            data={"chat_id": ADMIN_TELEGRAM_ID},
-            files={"voice": ("input.ogg", audio_bytes, "audio/ogg")},
-        )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to send to Telegram")
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice",
+                data={"chat_id": ADMIN_TELEGRAM_ID},
+                files={"voice": ("input.ogg", audio_bytes, "audio/ogg")},
+            )
+            logger.info("Telegram response: %d %s", resp.status_code, resp.text[:200])
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Telegram error: {resp.text[:200]}")
 
-    return {"status": "sent"}
+        return {"status": "sent"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Resend failed")
+        raise HTTPException(status_code=500, detail=str(e))
