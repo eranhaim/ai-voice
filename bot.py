@@ -54,6 +54,8 @@ DEFAULT_AUDIO_TAG = "[flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
+WAITING_EFFECT = 11
+SELECTING_DIALOGUE_VOICES, WRITING_DIALOGUE = 12, 13
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
@@ -146,6 +148,22 @@ def delete_elevenlabs_voice(voice_id: str) -> None:
         logger.exception("Failed to delete voice %s from ElevenLabs", voice_id)
 
 
+def generate_dialogue(turns: list[dict]) -> bytes:
+    """Generate multi-speaker dialogue. turns = [{"voice_id": "...", "text": "..."}, ...]"""
+    client = _get_elevenlabs()
+    from elevenlabs.types import DialogueInput
+    inputs = [DialogueInput(text=t["text"], voice_id=t["voice_id"]) for t in turns]
+    audio_iter = client.text_to_dialogue.convert(
+        inputs=inputs,
+        model_id=TTS_MODEL,
+        output_format="mp3_44100_128",
+    )
+    buffer = BytesIO()
+    for chunk in audio_iter:
+        buffer.write(chunk)
+    return buffer.getvalue()
+
+
 def generate_sound_effect(description: str, duration: float = 10.0) -> bytes:
     client = _get_elevenlabs()
     audio_iter = client.text_to_sound_effects.convert(
@@ -221,6 +239,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
+        "/dialogue — יצירת שיחה עם מספר קולות\n"
         "/effects — הוספת אפקט קולי ברקע\n"
         "/noeffects — הסרת אפקט הרקע\n"
     )
@@ -535,10 +554,149 @@ async def prompt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
+# ── /dialogue — multi-voice dialogue ──────────────────────────────────────────
+
+async def cmd_dialogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return ConversationHandler.END
+
+    system_voices = await get_system_voices()
+    custom_voices = await get_user_voices(user_id)
+    all_voices = system_voices + custom_voices
+
+    context.user_data["dialogue_available"] = all_voices
+    context.user_data["dialogue_selected"] = []
+
+    buttons = []
+    for i, v in enumerate(all_voices):
+        buttons.append([InlineKeyboardButton(v["name"], callback_data=f"dlg_pick:{i}")])
+    buttons.append([InlineKeyboardButton("סיימתי לבחור >>", callback_data="dlg_pick:done")])
+
+    await update.message.reply_text(
+        "בחר/י קולות לשיחה (לחץ/י על כל קול שרוצים, ואז \"סיימתי\"):",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return SELECTING_DIALOGUE_VOICES
+
+
+async def handle_dialogue_voice_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.replace("dlg_pick:", "")
+    available = context.user_data.get("dialogue_available", [])
+    selected = context.user_data.get("dialogue_selected", [])
+
+    if data == "done":
+        if len(selected) < 2:
+            await query.edit_message_text("צריך לבחור לפחות 2 קולות. נסה/י שוב עם /dialogue")
+            return ConversationHandler.END
+
+        mapping = "\n".join(f"{i+1} = {v['name']}" for i, v in enumerate(selected))
+        context.user_data["dialogue_voices"] = selected
+        await query.edit_message_text(
+            f"קולות שנבחרו:\n{mapping}\n\n"
+            "עכשיו כתוב/י את השיחה, שורה לכל תור:\n"
+            "1: טקסט ראשון\n"
+            "2: טקסט שני\n"
+            "1: טקסט שלישי\n\n"
+            "שלח/י /cancel לביטול."
+        )
+        return WRITING_DIALOGUE
+
+    idx = int(data)
+    if idx < len(available):
+        voice = available[idx]
+        if voice not in selected:
+            selected.append(voice)
+            context.user_data["dialogue_selected"] = selected
+
+        names = ", ".join(v["name"] for v in selected)
+        buttons = []
+        for i, v in enumerate(available):
+            label = (">> " if v in selected else "") + v["name"]
+            buttons.append([InlineKeyboardButton(label, callback_data=f"dlg_pick:{i}")])
+        buttons.append([InlineKeyboardButton(f"סיימתי לבחור ({len(selected)}) >>", callback_data="dlg_pick:done")])
+
+        await query.edit_message_text(
+            f"נבחרו: {names}\nלחץ/י על עוד קולות או \"סיימתי\":",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    return SELECTING_DIALOGUE_VOICES
+
+
+async def handle_dialogue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    voices = context.user_data.get("dialogue_voices", [])
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text("שלח/י טקסט שיחה או /cancel לביטול.")
+        return WRITING_DIALOGUE
+
+    turns = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            await update.message.reply_text(
+                f"שורה לא תקינה: \"{line}\"\n"
+                "הפורמט: מספר: טקסט (למשל 1: שלום)"
+            )
+            return WRITING_DIALOGUE
+        num_str, content = line.split(":", 1)
+        try:
+            idx = int(num_str.strip()) - 1
+        except ValueError:
+            await update.message.reply_text(
+                f"מספר לא תקין: \"{num_str}\"\n"
+                "השתמש/י במספרים 1, 2, 3..."
+            )
+            return WRITING_DIALOGUE
+        if idx < 0 or idx >= len(voices):
+            await update.message.reply_text(
+                f"קול {idx+1} לא קיים. יש {len(voices)} קולות."
+            )
+            return WRITING_DIALOGUE
+        turns.append({"voice_id": voices[idx]["elevenlabs_voice_id"], "text": content.strip()})
+
+    if not turns:
+        await update.message.reply_text("לא זוהו שורות שיחה. נסה/י שוב.")
+        return WRITING_DIALOGUE
+
+    await update.message.reply_chat_action("record_voice")
+    await update.message.reply_text(f"מייצר שיחה עם {len(turns)} תורות... זה עלול לקחת רגע.")
+
+    try:
+        audio_data = generate_dialogue(turns)
+        effect = await get_user_effect(user_id)
+        ogg_data = process_audio_with_effect(audio_data, effect)
+        logger.info("Dialogue done: %d turns, %d bytes", len(turns), len(ogg_data))
+        await update.message.reply_voice(voice=ogg_data)
+        dialogue_text = " | ".join(f"{t['text']}" for t in turns)
+        await log_run(user_id, "dialogue", dialogue_text)
+    except Exception:
+        logger.exception("Dialogue generation failed")
+        await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")
+
+    context.user_data.pop("dialogue_available", None)
+    context.user_data.pop("dialogue_selected", None)
+    context.user_data.pop("dialogue_voices", None)
+    return ConversationHandler.END
+
+
+async def dialogue_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("dialogue_available", None)
+    context.user_data.pop("dialogue_selected", None)
+    context.user_data.pop("dialogue_voices", None)
+    await update.message.reply_text("יצירת השיחה בוטלה.")
+    return ConversationHandler.END
+
+
 # ── /effects — background sound effects ───────────────────────────────────────
-
-WAITING_EFFECT = 11
-
 
 async def cmd_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -639,9 +797,23 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", effect_cancel)],
     )
 
+    dialogue_conv = ConversationHandler(
+        entry_points=[CommandHandler("dialogue", cmd_dialogue)],
+        states={
+            SELECTING_DIALOGUE_VOICES: [
+                CallbackQueryHandler(handle_dialogue_voice_pick, pattern=r"^dlg_pick:"),
+            ],
+            WRITING_DIALOGUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dialogue_text),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", dialogue_cancel)],
+    )
+
     app.add_handler(newvoice_conv)
     app.add_handler(prompt_conv)
     app.add_handler(effects_conv)
+    app.add_handler(dialogue_conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
