@@ -166,7 +166,7 @@ def generate_dialogue(turns: list[dict]) -> bytes:
     return buffer.getvalue()
 
 
-def remix_voice(voice_id: str, prompt: str, preview_text: str = "שלום, מה שלומך היום? אני כל כך שמחה לדבר איתך.") -> list[dict]:
+def remix_voice(voice_id: str, prompt: str, preview_text: str = "שלום מותק, מה שלומך היום? אני כל כך שמחה לדבר איתך. חיכיתי לשמוע ממך כל היום. ספר לי מה עשית, אני רוצה לשמוע הכל. באמת, אני פה בשבילך תמיד.") -> list[dict]:
     """Remix a voice and return list of previews [{generated_voice_id, audio_base64}]."""
     client = _get_elevenlabs()
     result = client.text_to_voice.remix(
