@@ -844,17 +844,30 @@ async def handle_enhance_save(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("גרסה לא נמצאה.")
         return ConversationHandler.END
 
-    new_voice_id = previews[idx]["generated_voice_id"]
+    generated_voice_id = previews[idx]["generated_voice_id"]
     user_id = query.from_user.id
     new_name = f"{original_voice.get('name', 'Enhanced')} (enhanced)"
 
-    voice_doc_id = await create_voice(user_id, new_name, new_voice_id, [])
-    await set_active_voice(user_id, voice_doc_id)
+    try:
+        client = _get_elevenlabs()
+        saved_voice = client.text_to_voice.create(
+            voice_name=new_name,
+            voice_description=prompt,
+            generated_voice_id=generated_voice_id,
+        )
+        real_voice_id = saved_voice.voice_id
+        logger.info("Saved enhanced voice: %s -> %s", generated_voice_id, real_voice_id)
 
-    await query.edit_message_text(
-        f"הקול \"{new_name}\" נשמר והוגדר כפעיל!\n"
-        "השתמש/י ב-/voices כדי לעבור בין קולות."
-    )
+        voice_doc_id = await create_voice(user_id, new_name, real_voice_id, [])
+        await set_active_voice(user_id, voice_doc_id)
+
+        await query.edit_message_text(
+            f"הקול \"{new_name}\" נשמר והוגדר כפעיל!\n"
+            "השתמש/י ב-/voices כדי לעבור בין קולות."
+        )
+    except Exception:
+        logger.exception("Failed to save enhanced voice")
+        await query.edit_message_text("שמירת הקול נכשלה. נסה/י שוב.")
 
     context.user_data.pop("enhance_voice", None)
     context.user_data.pop("enhance_previews", None)
