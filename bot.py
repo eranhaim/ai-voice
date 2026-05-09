@@ -51,7 +51,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[flirty, speaking to a man]"
+DEFAULT_AUDIO_TAG = "[flirty Israeli girl, addressing a male]"
 MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
