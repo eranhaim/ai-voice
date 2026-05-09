@@ -995,6 +995,8 @@ def main() -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", dialogue_cancel)],
+        per_message=False,
+        per_chat=True,
     )
 
     enhance_conv = ConversationHandler(
@@ -1011,6 +1013,8 @@ def main() -> None:
             ],
         },
         fallbacks=[CommandHandler("cancel", enhance_cancel)],
+        per_message=False,
+        per_chat=True,
     )
 
     app.add_handler(newvoice_conv)
