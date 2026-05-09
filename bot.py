@@ -107,7 +107,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.9}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 0.4, "style": 0.0}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
