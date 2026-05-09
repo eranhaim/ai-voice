@@ -56,7 +56,7 @@ MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
 WAITING_EFFECT = 11
-SELECTING_DIALOGUE_VOICES, WRITING_DIALOGUE = 12, 13
+SELECTING_DIALOGUE_VOICES, CHOOSING_DIALOGUE_MODE, WRITING_DIALOGUE, RECORDING_DIALOGUE_STS, PICKING_DIALOGUE_VOICE_FOR_TURN = 12, 13, 20, 21, 22
 SELECTING_ENHANCE_VOICE, WRITING_ENHANCE_PROMPT, CONFIRMING_ENHANCE = 14, 15, 16
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
@@ -225,6 +225,36 @@ def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
         logger.error("ffmpeg failed: %s", result.stderr.decode()[:200])
         return mp3_bytes
     return result.stdout
+
+
+def stitch_audio_clips(clips: list[bytes]) -> bytes:
+    """Concatenate multiple MP3 audio clips into one using ffmpeg."""
+    import tempfile, os
+    tmpdir = tempfile.mkdtemp()
+    try:
+        paths = []
+        for i, clip in enumerate(clips):
+            p = os.path.join(tmpdir, f"clip_{i}.mp3")
+            with open(p, "wb") as f:
+                f.write(clip)
+            paths.append(p)
+
+        list_file = os.path.join(tmpdir, "list.txt")
+        with open(list_file, "w") as f:
+            for p in paths:
+                f.write(f"file '{p}'\n")
+
+        result = subprocess.run(
+            ["ffmpeg", "-f", "concat", "-safe", "0", "-i", list_file, "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            logger.error("ffmpeg stitch failed: %s", result.stderr.decode()[:200])
+            return clips[0] if clips else b""
+        return result.stdout
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def process_audio_with_effect(voice_bytes: bytes, effect_description: str | None) -> bytes:
@@ -623,17 +653,18 @@ async def handle_dialogue_voice_pick(update: Update, context: ContextTypes.DEFAU
             await query.edit_message_text("צריך לבחור לפחות 2 קולות. נסה/י שוב עם /dialogue")
             return ConversationHandler.END
 
-        mapping = "\n".join(f"{i+1} = {v['name']}" for i, v in enumerate(selected))
         context.user_data["dialogue_voices"] = selected
+        mapping = "\n".join(f"{i+1} = {v['name']}" for i, v in enumerate(selected))
+        buttons = [
+            [InlineKeyboardButton("TTS — כתיבת טקסט", callback_data="dlg_mode:tts")],
+            [InlineKeyboardButton("STS — הקלטות קוליות", callback_data="dlg_mode:sts")],
+        ]
         await query.edit_message_text(
             f"קולות שנבחרו:\n{mapping}\n\n"
-            "עכשיו כתוב/י את השיחה, שורה לכל תור:\n"
-            "1: טקסט ראשון\n"
-            "2: טקסט שני\n"
-            "1: טקסט שלישי\n\n"
-            "שלח/י /cancel לביטול."
+            "איך תרצה/י ליצור את השיחה?",
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
-        return WRITING_DIALOGUE
+        return CHOOSING_DIALOGUE_MODE
 
     idx = int(data)
     if idx < len(available):
@@ -654,6 +685,119 @@ async def handle_dialogue_voice_pick(update: Update, context: ContextTypes.DEFAU
             reply_markup=InlineKeyboardMarkup(buttons),
         )
     return SELECTING_DIALOGUE_VOICES
+
+
+async def handle_dialogue_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    mode = query.data.replace("dlg_mode:", "")
+    voices = context.user_data.get("dialogue_voices", [])
+    mapping = "\n".join(f"{i+1} = {v['name']}" for i, v in enumerate(voices))
+
+    if mode == "tts":
+        await query.edit_message_text(
+            f"קולות:\n{mapping}\n\n"
+            "כתוב/י את השיחה, שורה לכל תור:\n"
+            "1: טקסט ראשון\n"
+            "2: טקסט שני\n"
+            "1: טקסט שלישי\n\n"
+            "שלח/י /cancel לביטול."
+        )
+        return WRITING_DIALOGUE
+    else:
+        context.user_data["dialogue_sts_turns"] = []
+        voice_buttons = []
+        for i, v in enumerate(voices):
+            voice_buttons.append([InlineKeyboardButton(f"{i+1}: {v['name']}", callback_data=f"dlg_sts_voice:{i}")])
+        context.user_data["dialogue_sts_voice_buttons"] = voice_buttons
+
+        await query.edit_message_text(
+            f"קולות:\n{mapping}\n\n"
+            "מצב הקלטה: שלח/י הקלטה קולית, ואז בחר/י לאיזה קול לשייך אותה.\n"
+            "שלח/י /done בסיום, או /cancel לביטול."
+        )
+        return RECORDING_DIALOGUE_STS
+
+
+async def handle_dialogue_sts_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
+        return RECORDING_DIALOGUE_STS
+
+    file = await context.bot.get_file(voice.file_id)
+    audio_data = await file.download_as_bytearray()
+    context.user_data["dialogue_sts_pending_audio"] = bytes(audio_data)
+
+    voice_buttons = context.user_data.get("dialogue_sts_voice_buttons", [])
+    await update.message.reply_text(
+        "לאיזה קול לשייך את ההקלטה?",
+        reply_markup=InlineKeyboardMarkup(voice_buttons),
+    )
+    return PICKING_DIALOGUE_VOICE_FOR_TURN
+
+
+async def handle_dialogue_sts_voice_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.replace("dlg_sts_voice:", ""))
+    voices = context.user_data.get("dialogue_voices", [])
+    pending_audio = context.user_data.pop("dialogue_sts_pending_audio", None)
+
+    if not pending_audio or idx >= len(voices):
+        await query.edit_message_text("שגיאה. נסה/י שוב.")
+        return RECORDING_DIALOGUE_STS
+
+    turns = context.user_data.get("dialogue_sts_turns", [])
+    turns.append({"audio": pending_audio, "voice_idx": idx})
+    context.user_data["dialogue_sts_turns"] = turns
+
+    await query.edit_message_text(
+        f"תור {len(turns)} נשמר עם קול: {voices[idx]['name']}\n"
+        "שלח/י הקלטה נוספת, /done לסיום, או /cancel לביטול."
+    )
+    return RECORDING_DIALOGUE_STS
+
+
+async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    turns = context.user_data.get("dialogue_sts_turns", [])
+    voices = context.user_data.get("dialogue_voices", [])
+
+    if not turns:
+        await update.message.reply_text("לא התקבלו הקלטות. שלח/י הקלטה או /cancel.")
+        return RECORDING_DIALOGUE_STS
+
+    await update.message.reply_text(f"ממיר {len(turns)} הקלטות... זה עלול לקחת רגע.")
+    await update.message.reply_chat_action("record_voice")
+
+    try:
+        converted_clips = []
+        for turn in turns:
+            voice_id = voices[turn["voice_idx"]]["elevenlabs_voice_id"]
+            converted = speech_to_speech(turn["audio"], voice_id)
+            converted_clips.append(converted)
+
+        stitched = stitch_audio_clips(converted_clips)
+        effect = await get_user_effect(user_id)
+        ogg_data = process_audio_with_effect(stitched, effect)
+        logger.info("STS Dialogue done: %d turns, %d bytes", len(turns), len(ogg_data))
+
+        await update.message.reply_voice(voice=ogg_data)
+        voice_names = ", ".join(voices[t["voice_idx"]]["name"] for t in turns)
+        await log_run(user_id, "dialogue_sts", f"{len(turns)} turns", voice_names)
+    except Exception:
+        logger.exception("STS Dialogue failed")
+        await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")
+
+    context.user_data.pop("dialogue_available", None)
+    context.user_data.pop("dialogue_selected", None)
+    context.user_data.pop("dialogue_voices", None)
+    context.user_data.pop("dialogue_sts_turns", None)
+    context.user_data.pop("dialogue_sts_voice_buttons", None)
+    return ConversationHandler.END
 
 
 async def handle_dialogue_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -719,9 +863,9 @@ async def handle_dialogue_text(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def dialogue_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("dialogue_available", None)
-    context.user_data.pop("dialogue_selected", None)
-    context.user_data.pop("dialogue_voices", None)
+    for key in ["dialogue_available", "dialogue_selected", "dialogue_voices",
+                "dialogue_sts_turns", "dialogue_sts_voice_buttons", "dialogue_sts_pending_audio"]:
+        context.user_data.pop(key, None)
     await update.message.reply_text("יצירת השיחה בוטלה.")
     return ConversationHandler.END
 
@@ -990,8 +1134,18 @@ def main() -> None:
             SELECTING_DIALOGUE_VOICES: [
                 CallbackQueryHandler(handle_dialogue_voice_pick, pattern=r"^dlg_pick:"),
             ],
+            CHOOSING_DIALOGUE_MODE: [
+                CallbackQueryHandler(handle_dialogue_mode, pattern=r"^dlg_mode:"),
+            ],
             WRITING_DIALOGUE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dialogue_text),
+            ],
+            RECORDING_DIALOGUE_STS: [
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_dialogue_sts_recording),
+                CommandHandler("done", handle_dialogue_sts_done),
+            ],
+            PICKING_DIALOGUE_VOICE_FOR_TURN: [
+                CallbackQueryHandler(handle_dialogue_sts_voice_pick, pattern=r"^dlg_sts_voice:"),
             ],
         },
         fallbacks=[CommandHandler("cancel", dialogue_cancel)],
