@@ -51,7 +51,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[flirty Israeli girl, addressing a male]"
+DEFAULT_AUDIO_TAG = "[flirty Israeli accent, addressing a male]"
 MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
@@ -107,7 +107,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.0}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.3}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
