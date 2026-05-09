@@ -57,6 +57,33 @@ async def is_authorized(telegram_id: int) -> bool:
     return user is not None
 
 
+# ── User settings (speed, language) ───────────────────────────────────────────
+
+async def get_user_settings(telegram_id: int) -> dict:
+    db = get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    if not user:
+        return {"speed": 1.0, "language": "he"}
+    return {
+        "speed": user.get("speed", 1.0),
+        "language": user.get("language", "he"),
+    }
+
+
+async def set_user_settings(telegram_id: int, speed: float | None = None, language: str | None = None) -> None:
+    db = get_db()
+    update = {}
+    if speed is not None:
+        update["speed"] = speed
+    if language is not None:
+        update["language"] = language
+    if update:
+        await db.users.update_one(
+            {"telegram_id": telegram_id},
+            {"$set": update},
+        )
+
+
 # ── Effects ───────────────────────────────────────────────────────────────────
 
 async def get_user_effect(telegram_id: int) -> str | None:

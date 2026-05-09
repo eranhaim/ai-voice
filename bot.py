@@ -27,6 +27,8 @@ from db import (
     set_user_prompt,
     get_user_effect,
     set_user_effect,
+    get_user_settings,
+    set_user_settings,
     set_active_voice,
     create_voice,
     get_user_voices,
@@ -83,16 +85,18 @@ def _ensure_brackets(tag: str) -> str:
     return tag
 
 
-def text_to_speech(text: str, voice_id: str, audio_tag: str = "") -> bytes:
+def text_to_speech(text: str, voice_id: str, audio_tag: str = "", speed: float = 1.0, language: str = "he") -> bytes:
     client = _get_elevenlabs()
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
+    voice_settings = {"stability": 0.7, "similarity_boost": 0.75, "style": 0.0, "speed": speed}
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
         output_format="mp3_44100_128",
-        language_code="he",
+        language_code=language,
+        voice_settings=voice_settings,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -288,6 +292,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
+        "/settings — מהירות דיבור ושפה\n"
         "/enhance — שיפור קול קיים עם הנחיה\n"
         "/dialogue — יצירת שיחה עם מספר קולות\n"
         "/effects — הוספת אפקט קולי ברקע\n"
@@ -315,14 +320,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     vname = await get_voice_name(user_id)
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     effect = await get_user_effect(user_id)
+    settings = await get_user_settings(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
 
     try:
-        audio_data = text_to_speech(text, voice_id, audio_tag)
+        audio_data = text_to_speech(text, voice_id, audio_tag, settings["speed"], settings["language"])
         if not audio_data:
             logger.warning("TTS returned empty audio, retrying without audio tag")
-            audio_data = text_to_speech(text, voice_id)
+            audio_data = text_to_speech(text, voice_id, speed=settings["speed"], language=settings["language"])
         if not audio_data:
             await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
             return
@@ -870,6 +876,65 @@ async def dialogue_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
+# ── /settings — speed and language ─────────────────────────────────────────────
+
+LANG_OPTIONS = {
+    "he": "עברית",
+    "en": "English",
+    "ar": "العربية",
+    "ru": "Русский",
+    "fr": "Français",
+    "es": "Español",
+}
+
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return
+
+    settings = await get_user_settings(user_id)
+    lang_name = LANG_OPTIONS.get(settings["language"], settings["language"])
+
+    speed_buttons = []
+    for s in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]:
+        label = f"{'>> ' if settings['speed'] == s else ''}{s}x"
+        speed_buttons.append(InlineKeyboardButton(label, callback_data=f"set_speed:{s}"))
+
+    lang_buttons = []
+    for code, name in LANG_OPTIONS.items():
+        label = f"{'>> ' if settings['language'] == code else ''}{name}"
+        lang_buttons.append(InlineKeyboardButton(label, callback_data=f"set_lang:{code}"))
+
+    buttons = [speed_buttons[:3], speed_buttons[3:], lang_buttons[:3], lang_buttons[3:]]
+
+    await update.message.reply_text(
+        f"הגדרות נוכחיות:\n"
+        f"מהירות: {settings['speed']}x\n"
+        f"שפה: {lang_name}\n\n"
+        "בחר/י להגדיר:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_set_speed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    speed = float(query.data.replace("set_speed:", ""))
+    await set_user_settings(query.from_user.id, speed=speed)
+    await query.edit_message_text(f"מהירות הדיבור הוגדרה ל-{speed}x")
+
+
+async def handle_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    lang = query.data.replace("set_lang:", "")
+    lang_name = LANG_OPTIONS.get(lang, lang)
+    await set_user_settings(query.from_user.id, language=lang)
+    await query.edit_message_text(f"השפה הוגדרה ל-{lang_name}")
+
+
 # ── /enhance — remix a voice with a prompt ────────────────────────────────────
 
 async def cmd_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1179,6 +1244,9 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CallbackQueryHandler(handle_set_speed, pattern=r"^set_speed:"))
+    app.add_handler(CallbackQueryHandler(handle_set_lang, pattern=r"^set_lang:"))
     app.add_handler(CommandHandler("voices", cmd_voices))
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
