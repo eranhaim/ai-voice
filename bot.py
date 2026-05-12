@@ -518,6 +518,10 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return COLLECTING_SAMPLES
 
     samples = context.user_data.get("new_voice_samples", [])
+    if len(samples) >= 25:
+        await update.message.reply_text("הגעת למקסימום 25 דגימות. שלח/י /done ליצירת הקול.")
+        return COLLECTING_SAMPLES
+
     file = await context.bot.get_file(voice.file_id)
     data = await file.download_as_bytearray()
     samples.append(bytes(data))
@@ -525,7 +529,7 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await update.message.reply_text(
         f"דגימה {len(samples)} התקבלה. "
-        f"שלח/י עוד או /done ליצירת הקול ({len(samples)} דגימות)."
+        f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/25)."
     )
     return COLLECTING_SAMPLES
 
