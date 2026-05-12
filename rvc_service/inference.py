@@ -68,8 +68,18 @@ def _get_vc(voice_id: str, model_path: str):
     if voice_id in _VC_CACHE:
         return _VC_CACHE[voice_id]
 
-    sys.path.insert(0, RVC_HOME)
+    if RVC_HOME not in sys.path:
+        sys.path.insert(0, RVC_HOME)
     os.chdir(RVC_HOME)
+
+    # VC.get_vc reads these env vars to resolve weight + index files.
+    weights_dir = os.path.join(RVC_HOME, "assets/weights")
+    indexes_dir = os.path.join(RVC_HOME, "assets/indices")
+    os.makedirs(weights_dir, exist_ok=True)
+    os.makedirs(indexes_dir, exist_ok=True)
+    os.environ["weight_root"] = weights_dir
+    os.environ["index_root"] = indexes_dir
+    os.environ.setdefault("rmvpe_root", os.path.join(RVC_HOME, "assets/rmvpe"))
 
     from infer.modules.vc.modules import VC
     from configs.config import Config
@@ -79,12 +89,12 @@ def _get_vc(voice_id: str, model_path: str):
     config.is_half = True
 
     vc = VC(config)
-    # Move our model into assets/weights with a known name so VC.get_vc can find it.
-    weights_dir = os.path.join(RVC_HOME, "assets/weights")
-    os.makedirs(weights_dir, exist_ok=True)
     weight_name = f"{voice_id}.pth"
     weight_target = os.path.join(weights_dir, weight_name)
-    if not os.path.exists(weight_target) or os.path.getmtime(weight_target) < os.path.getmtime(model_path):
+    if (
+        not os.path.exists(weight_target)
+        or os.path.getmtime(weight_target) < os.path.getmtime(model_path)
+    ):
         import shutil
         shutil.copy(model_path, weight_target)
     vc.get_vc(weight_name)
@@ -118,7 +128,7 @@ def run_inference(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> byte
         vc = _get_vc(voice_id, model_path)
         _log(f"converting voice_id={voice_id} f0_up_key={f0_up_key}")
         try:
-            info, (tgt_sr, audio_out) = vc.vc_single(
+            info, audio_pair = vc.vc_single(
                 0,                  # sid (speaker id, only one)
                 wav_path,           # input
                 f0_up_key,
@@ -135,6 +145,10 @@ def run_inference(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> byte
         except Exception:
             _log("vc_single failed")
             raise
+
+        if not audio_pair or audio_pair[0] is None or audio_pair[1] is None:
+            raise RuntimeError(f"RVC vc_single returned no audio: {info}")
+        tgt_sr, audio_out = audio_pair
 
         import soundfile as sf
         sf.write(out_wav, audio_out, tgt_sr)

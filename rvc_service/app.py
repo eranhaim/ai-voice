@@ -50,8 +50,18 @@ image = (
         "tensorboardX",
         "pydub",
         "ffmpeg-python",
-        "torchcrepe",
+        "torchcrepe==0.0.20",
+        "torchfcpe",
+        "ffmpy==0.3.1",
+        "av",
+        "onnxruntime-gpu",
+        "resampy>=0.4.2",
+        "tensorboard",
+        "Jinja2>=3.1.2",
+        "Pillow>=9.1.1",
+        "scikit-learn",
     )
+    .env({"PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python"})
     .run_commands(
         f"git clone {RVC_REPO} {RVC_HOME}",
         # Pretrained models and feature extractors

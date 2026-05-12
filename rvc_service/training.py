@@ -77,15 +77,34 @@ def _download_samples(sample_urls: list[str], dest_dir: str) -> int:
     return count
 
 
-def _run(cmd: list[str], cwd: str = RVC_HOME, check: bool = True) -> None:
+def _run(cmd: list[str], cwd: str = RVC_HOME, check: bool = True) -> int:
+    """Run a subprocess streaming its output to the Modal logs."""
     _log("$ " + " ".join(cmd))
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if result.stdout:
-        _log(result.stdout[-2000:])
-    if result.stderr:
-        _log("STDERR: " + result.stderr[-2000:])
-    if check and result.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(cmd)}")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    last_lines: list[str] = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        _log(line)
+        last_lines.append(line)
+        if len(last_lines) > 40:
+            last_lines.pop(0)
+    proc.wait()
+    if check and proc.returncode != 0:
+        tail = " | ".join(last_lines[-10:])
+        raise RuntimeError(
+            f"command failed (rc={proc.returncode}): {' '.join(cmd)} :: {tail}"
+        )
+    return proc.returncode
 
 
 def _upload(bucket: str, key: str, local_path: str) -> str:
@@ -116,10 +135,15 @@ def run_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150) 
 
         # 1. Preprocess: slice and normalize. RVC's preprocess takes:
         #    inp_root sr n_p exp_dir no_parallel per
+        # Use noparallel=True for deterministic sequential processing inside Modal.
         _run([
             sys.executable, "infer/modules/train/preprocess.py",
-            samples_dir, "40000", "2", logs_dir, "False", "3.7",
+            samples_dir, "40000", "2", logs_dir, "True", "3.7",
         ])
+
+        gt_wavs_dir = os.path.join(logs_dir, "0_gt_wavs")
+        if not os.path.isdir(gt_wavs_dir) or not os.listdir(gt_wavs_dir):
+            raise RuntimeError("preprocess produced no usable slices")
 
         # 2. Extract f0 with rmvpe.
         _run([
@@ -219,21 +243,34 @@ def _build_filelist(logs_dir: str, exp_name: str) -> None:
             continue
         lines.append(f"{wav}|{feat}|{f0v}|{f0n}|{spk_id}")
 
-    # Mute lines required by RVC trainer.
+    if not lines:
+        raise RuntimeError(
+            f"no training rows; check feature extraction. logs_dir={logs_dir}"
+        )
+
+    # Mute lines required by RVC trainer (only append if mute assets exist).
     mute_wav = os.path.join(RVC_HOME, "logs/mute/0_gt_wavs/mute40k.wav")
     mute_feat = os.path.join(RVC_HOME, "logs/mute/3_feature768/mute.npy")
     mute_f0 = os.path.join(RVC_HOME, "logs/mute/2a_f0/mute.wav.npy")
     mute_f0nsf = os.path.join(RVC_HOME, "logs/mute/2b-f0nsf/mute.wav.npy")
-    for _ in range(2):
-        lines.append(f"{mute_wav}|{mute_feat}|{mute_f0}|{mute_f0nsf}|{spk_id}")
+    if all(os.path.exists(p) for p in [mute_wav, mute_feat, mute_f0, mute_f0nsf]):
+        for _ in range(2):
+            lines.append(f"{mute_wav}|{mute_feat}|{mute_f0}|{mute_f0nsf}|{spk_id}")
+    else:
+        _log("mute assets missing; skipping mute lines")
 
     with open(os.path.join(logs_dir, "filelist.txt"), "w") as f:
         f.write("\n".join(lines) + "\n")
 
     # Copy default training config.
     cfg_src = os.path.join(RVC_HOME, "configs/v2/40k.json")
+    if not os.path.exists(cfg_src):
+        # Older RVC layouts kept configs at the root.
+        cfg_src = os.path.join(RVC_HOME, "configs/40k.json")
     if os.path.exists(cfg_src):
         shutil.copy(cfg_src, os.path.join(logs_dir, "config.json"))
+    else:
+        raise RuntimeError("missing RVC training config (configs/v2/40k.json)")
 
 
 def _build_index(logs_dir: str, exp_name: str) -> None:
