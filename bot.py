@@ -498,6 +498,7 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(
         f"שם הקול: {name}\n\n"
         "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
+        "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
         f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
         "שלח/י /done בסיום, או /cancel לביטול."
     )
@@ -506,11 +507,15 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     voice = update.message.voice or update.message.audio
+    if not voice and update.message.document:
+        mime = update.message.document.mime_type or ""
+        if mime.startswith("audio/") or mime.startswith("video/"):
+            voice = update.message.document
     if not voice:
         await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
         return COLLECTING_SAMPLES
 
-    if voice.duration and voice.duration < MIN_SAMPLE_DURATION:
+    if getattr(voice, "duration", None) and voice.duration < MIN_SAMPLE_DURATION:
         await update.message.reply_text(
             f"ההקלטה קצרה מדי ({voice.duration} שניות). "
             f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות."
@@ -526,6 +531,13 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = await file.download_as_bytearray()
     samples.append(bytes(data))
     context.user_data["new_voice_samples"] = samples
+
+    mgid = update.message.media_group_id
+    if mgid:
+        prev_mgid = context.user_data.get("_last_media_group_id")
+        context.user_data["_last_media_group_id"] = mgid
+        if mgid == prev_mgid:
+            return COLLECTING_SAMPLES
 
     await update.message.reply_text(
         f"דגימה {len(samples)} התקבלה. "
@@ -1169,7 +1181,7 @@ def main() -> None:
         states={
             WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, newvoice_name)],
             COLLECTING_SAMPLES: [
-                MessageHandler(filters.VOICE | filters.AUDIO, newvoice_sample),
+                MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, newvoice_sample),
                 CommandHandler("done", newvoice_done),
             ],
         },
