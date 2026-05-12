@@ -1,9 +1,11 @@
-# Hebrew Voice Bot — Telegram + ElevenLabs
+# Hebrew Voice Bot — Telegram + ElevenLabs + RVC
 
-A Telegram bot that converts text to speech (Hebrew female voice) and converts voice messages to a female voice using ElevenLabs.
+A Telegram bot that converts text to speech and converts voice messages to a chosen voice. Two modes:
 
-- **Send text** -> bot replies with a spoken voice message
-- **Send a voice recording** -> bot converts it to a female voice and sends it back
+- **Casual** (default) — ElevenLabs TTS + STS. Fast, instant clones, decent similarity.
+- **Premium** — RVC on Modal GPUs. Long training (~20-60 min per voice) but near-perfect similarity. TTS chains ElevenLabs -> RVC.
+
+Customers toggle modes from `/settings`. See [rvc_service/deploy.md](rvc_service/deploy.md) for Premium setup.
 
 ---
 
@@ -92,6 +94,21 @@ docker compose ps
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | `ELEVENLABS_API_KEY` | API key from elevenlabs.io |
 | `ELEVENLABS_VOICE_ID` | Voice to use (see below) |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | Optional — required for Premium mode |
+| `RVC_SOURCE_VOICE_ID` | Optional — neutral EL voice used as TTS source in Premium |
+
+## Premium mode (RVC)
+
+Premium uses a separate Modal app for GPU training/inference. One-time setup:
+
+```bash
+pip install modal
+modal token new
+modal secret create ai-voice MONGO_URI=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_S3_BUCKET=... AWS_REGION=us-east-1
+modal deploy rvc_service/app.py
+```
+
+Then put the same `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` into the bot's `.env` and redeploy. Full details in [rvc_service/deploy.md](rvc_service/deploy.md).
 
 ### Available Free-Tier Voices
 

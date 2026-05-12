@@ -34,6 +34,11 @@ def upload_run_audio(telegram_id: int, filename: str, audio_bytes: bytes) -> str
 def delete_samples(urls: list[str]) -> None:
     client = _get_client()
     for url in urls:
+        if not url:
+            continue
         parts = url.replace("s3://", "").split("/", 1)
         if len(parts) == 2:
-            client.delete_object(Bucket=parts[0], Key=parts[1])
+            try:
+                client.delete_object(Bucket=parts[0], Key=parts[1])
+            except Exception:
+                pass

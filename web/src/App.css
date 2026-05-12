@@ -234,6 +234,36 @@ tr:hover td {
   border: 1px solid #8b5cf644;
 }
 
+.badge-elevenlabs {
+  background: #1f6feb22;
+  color: #58a6ff;
+  border: 1px solid #1f6feb44;
+}
+
+.badge-rvc {
+  background: #d29922cc;
+  color: #18171a;
+  border: 1px solid #d29922;
+}
+
+.badge-status-ready {
+  background: #2ea04322;
+  color: #3fb950;
+  border: 1px solid #2ea04344;
+}
+
+.badge-status-training {
+  background: #d2992222;
+  color: #d29922;
+  border: 1px solid #d2992244;
+}
+
+.badge-status-failed {
+  background: #f8514922;
+  color: #f85149;
+  border: 1px solid #f8514944;
+}
+
 /* ── Misc ────────────────────────────────────────────── */
 
 .error {

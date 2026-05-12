@@ -29,15 +29,25 @@ from db import (
     set_user_effect,
     get_user_settings,
     set_user_settings,
+    get_user_mode,
+    set_user_mode,
+    voice_kind_for_mode,
+    get_active_voice_doc,
     set_active_voice,
     create_voice,
     get_user_voices,
     get_voice_by_id,
     delete_voice,
+    set_voice_training_status,
+    find_unnotified_finished_voices,
+    mark_voice_notified,
     get_system_voices,
     seed_system_voices,
+    MODE_CASUAL,
+    MODE_PREMIUM,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
+import rvc_client
 
 load_dotenv()
 
@@ -55,6 +65,13 @@ STS_MODEL = "eleven_multilingual_sts_v2"
 
 DEFAULT_AUDIO_TAG = "[flirty natural girl, addressing a male]"
 MIN_SAMPLE_DURATION = 5
+
+# Total clean audio (seconds) required across all samples for a premium voice.
+PREMIUM_MIN_TOTAL_SECONDS = 5 * 60
+
+# Neutral, expressive ElevenLabs voice used as the *source* for premium TTS.
+# RVC fully replaces the timbre, so the source voice only needs clean prosody.
+RVC_SOURCE_VOICE_ID = os.getenv("RVC_SOURCE_VOICE_ID", "Sm1seazb4gs7RSlUVw7c")
 
 WAITING_PROMPT = 10
 WAITING_EFFECT = 11
@@ -111,7 +128,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.95, "style": 0.3}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 0.95, "style": 0.5}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -292,9 +309,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
-        "/settings — מהירות דיבור ושפה\n"
-        "/enhance — שיפור קול קיים עם הנחיה\n"
-        "/dialogue — יצירת שיחה עם מספר קולות\n"
+        "/settings — מצב (Casual/Premium), מהירות ושפה\n"
+        "/enhance — שיפור קול קיים עם הנחיה (Casual)\n"
+        "/dialogue — יצירת שיחה עם מספר קולות (Casual)\n"
         "/effects — הוספת אפקט קולי ברקע\n"
         "/noeffects — הסרת אפקט הרקע\n"
     )
@@ -316,22 +333,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("הטקסט ארוך מדי. מקסימום 5,000 תווים.")
         return
 
-    voice_id = await get_user_voice_id(user_id)
-    vname = await get_voice_name(user_id)
+    mode = await get_user_mode(user_id)
+    active = await get_active_voice_doc(user_id)
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     effect = await get_user_effect(user_id)
     settings = await get_user_settings(user_id)
-    logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
 
     try:
-        audio_data = text_to_speech(text, voice_id, audio_tag, settings["speed"], settings["language"])
-        if not audio_data:
-            logger.warning("TTS returned empty audio, retrying without audio tag")
-            audio_data = text_to_speech(text, voice_id, speed=settings["speed"], language=settings["language"])
-        if not audio_data:
-            await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
-            return
+        if mode == MODE_PREMIUM:
+            if not active or active["kind"] != "rvc":
+                await update.message.reply_text(
+                    "במצב Premium צריך לבחור קול Premium. השתמש/י ב-/voices או צור/י קול חדש עם /newvoice."
+                )
+                return
+            if active.get("training_status") != "ready":
+                await update.message.reply_text(
+                    "הקול עוד באימון. ננסה לעדכן אותך כשמוכן."
+                )
+                return
+
+            logger.info("Premium TTS from %d voice=%s chars=%d", user_id, active["id"], len(text))
+            tts_audio = text_to_speech(
+                text, RVC_SOURCE_VOICE_ID, audio_tag,
+                settings["speed"], settings["language"],
+            )
+            if not tts_audio:
+                tts_audio = text_to_speech(
+                    text, RVC_SOURCE_VOICE_ID,
+                    speed=settings["speed"], language=settings["language"],
+                )
+            if not tts_audio:
+                await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
+                return
+            await update.message.reply_chat_action("record_voice")
+            audio_data = rvc_client.convert_audio(active["id"], tts_audio)
+            vname = active["name"]
+        else:
+            voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
+            vname = active["name"] if active else await get_voice_name(user_id)
+            logger.info("Casual TTS from %d voice=%s chars=%d", user_id, voice_id, len(text))
+            audio_data = text_to_speech(text, voice_id, audio_tag, settings["speed"], settings["language"])
+            if not audio_data:
+                logger.warning("TTS returned empty audio, retrying without audio tag")
+                audio_data = text_to_speech(text, voice_id, speed=settings["speed"], language=settings["language"])
+            if not audio_data:
+                await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
+                return
+
         ogg_data = process_audio_with_effect(audio_data, effect)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
@@ -351,10 +400,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not voice:
         return
 
-    voice_id = await get_user_voice_id(user_id)
-    vname = await get_voice_name(user_id)
+    mode = await get_user_mode(user_id)
+    active = await get_active_voice_doc(user_id)
     effect = await get_user_effect(user_id)
-    logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
 
     try:
@@ -376,7 +424,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("Transcription failed, continuing with voice conversion")
 
-        converted = speech_to_speech(audio_bytes, voice_id)
+        if mode == MODE_PREMIUM:
+            if not active or active["kind"] != "rvc":
+                await update.message.reply_text(
+                    "במצב Premium צריך לבחור קול Premium. השתמש/י ב-/voices או צור/י קול חדש עם /newvoice."
+                )
+                return
+            if active.get("training_status") != "ready":
+                await update.message.reply_text("הקול עוד באימון. ננסה לעדכן אותך כשמוכן.")
+                return
+            logger.info("Premium STS from %d voice=%s dur=%ss", user_id, active["id"], voice.duration)
+            converted = rvc_client.convert_audio(active["id"], audio_bytes)
+            vname = active["name"]
+        else:
+            voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
+            vname = active["name"] if active else await get_voice_name(user_id)
+            logger.info("Casual STS from %d voice=%s dur=%ss", user_id, voice_id, voice.duration)
+            converted = speech_to_speech(audio_bytes, voice_id)
+
         ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
@@ -395,23 +460,45 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return
 
-    current_voice_id = await get_user_voice_id(user_id)
-    system_voices = await get_system_voices()
-    custom_voices = await get_user_voices(user_id)
+    mode = await get_user_mode(user_id)
+    active = await get_active_voice_doc(user_id)
+    active_doc_id = active["id"] if active else ""
 
     buttons = []
-    for sv in system_voices:
-        is_active = sv["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + sv["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
+    header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)"
 
-    for v in custom_voices:
-        is_active = v["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + v["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+    if mode == MODE_PREMIUM:
+        header = "מצב Premium — קולות איכותיים מאומנים\n(>> מסמן את הנוכחי)"
+        custom = await get_user_voices(user_id, kind="rvc")
+        if not custom:
+            await update.message.reply_text(
+                "אין לך עדיין קולות Premium. צור/י קול חדש עם /newvoice (האימון לוקח 15-60 דקות)."
+            )
+            return
+        for v in custom:
+            status = v.get("training_status", "ready")
+            is_active = v["id"] == active_doc_id
+            if status == "ready":
+                label = (">> " if is_active else "") + v["name"]
+                buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+            else:
+                badge = "(באימון)" if status == "training" else "(נכשל)"
+                label = f"{v['name']} {badge}"
+                buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:disabled")])
+    else:
+        system_voices = await get_system_voices()
+        custom = await get_user_voices(user_id, kind="elevenlabs")
+        for sv in system_voices:
+            is_active = sv["id"] == active_doc_id
+            label = (">> " if is_active else "") + sv["name"]
+            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
+        for v in custom:
+            is_active = v["id"] == active_doc_id
+            label = (">> " if is_active else "") + v["name"]
+            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
 
     await update.message.reply_text(
-        "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)",
+        header,
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -423,9 +510,16 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     data = query.data.replace("voice_select:", "")
 
+    if data == "disabled":
+        await query.answer("הקול עוד באימון, לא ניתן לבחור", show_alert=True)
+        return
+
     voice = await get_voice_by_id(data)
     if not voice:
         await query.edit_message_text("הקול לא נמצא.")
+        return
+    if voice.get("training_status") not in (None, "ready"):
+        await query.answer("הקול עוד באימון", show_alert=True)
         return
     await set_active_voice(user_id, data)
     await query.edit_message_text(f"עברת לקול: {voice['name']}")
@@ -439,14 +533,20 @@ async def cmd_deletevoice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return
 
-    voices = await get_user_voices(user_id)
+    mode = await get_user_mode(user_id)
+    voices = await get_user_voices(user_id, kind=voice_kind_for_mode(mode))
     if not voices:
-        await update.message.reply_text("אין לך קולות מותאמים.")
+        await update.message.reply_text("אין לך קולות מותאמים במצב זה.")
         return
 
     buttons = []
     for v in voices:
-        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}", callback_data=f"voice_delete:{v['id']}")])
+        suffix = ""
+        if v.get("training_status") == "training":
+            suffix = " (באימון)"
+        elif v.get("training_status") == "failed":
+            suffix = " (נכשל)"
+        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}{suffix}", callback_data=f"voice_delete:{v['id']}")])
 
     await update.message.reply_text(
         "איזה קול למחוק?",
@@ -465,11 +565,20 @@ async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("הקול לא נמצא.")
         return
 
-    delete_elevenlabs_voice(deleted["elevenlabs_voice_id"])
+    kind = deleted.get("kind", "elevenlabs")
+    if kind == "elevenlabs" and deleted.get("elevenlabs_voice_id"):
+        delete_elevenlabs_voice(deleted["elevenlabs_voice_id"])
+
     try:
         delete_samples(deleted["sample_urls"])
     except Exception:
         logger.exception("Failed to delete S3 samples")
+
+    if kind == "rvc":
+        try:
+            delete_samples([deleted.get("rvc_model_url"), deleted.get("rvc_index_url")])
+        except Exception:
+            logger.exception("Failed to delete RVC model files")
 
     await query.edit_message_text("הקול נמחק.")
 
@@ -482,7 +591,17 @@ async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    await update.message.reply_text("איזה שם לתת לקול החדש?")
+    mode = await get_user_mode(user_id)
+    context.user_data["new_voice_mode"] = mode
+    if mode == MODE_PREMIUM:
+        await update.message.reply_text(
+            "יצירת קול Premium (RVC).\n"
+            f"דרוש לפחות {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות של דגימות נקיות.\n"
+            "האימון לוקח 15-60 דקות, אעדכן אותך כשמוכן.\n\n"
+            "איזה שם לתת לקול?"
+        )
+    else:
+        await update.message.reply_text("איזה שם לתת לקול החדש?")
     return WAITING_NAME
 
 
@@ -494,14 +613,25 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     context.user_data["new_voice_name"] = name
     context.user_data["new_voice_samples"] = []
+    context.user_data["new_voice_total_seconds"] = 0
 
-    await update.message.reply_text(
-        f"שם הקול: {name}\n\n"
-        "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
-        "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
-        f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
-        "שלח/י /done בסיום, או /cancel לביטול."
-    )
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
+    if mode == MODE_PREMIUM:
+        await update.message.reply_text(
+            f"שם הקול: {name}\n\n"
+            "שלח/י דגימות קוליות. אפשר כמה קבצים בבת אחת.\n"
+            f"דרוש סה\"כ {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות לפחות לאיכות מקסימלית.\n"
+            f"כל הקלטה לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+            "שלח/י /done בסיום, או /cancel לביטול."
+        )
+    else:
+        await update.message.reply_text(
+            f"שם הקול: {name}\n\n"
+            "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
+            "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
+            f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+            "שלח/י /done בסיום, או /cancel לביטול."
+        )
     return COLLECTING_SAMPLES
 
 
@@ -522,8 +652,9 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return COLLECTING_SAMPLES
 
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
     samples = context.user_data.get("new_voice_samples", [])
-    if len(samples) >= 25:
+    if mode == MODE_CASUAL and len(samples) >= 25:
         await update.message.reply_text("הגעת למקסימום 25 דגימות. שלח/י /done ליצירת הקול.")
         return COLLECTING_SAMPLES
 
@@ -532,6 +663,10 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     samples.append(bytes(data))
     context.user_data["new_voice_samples"] = samples
 
+    duration = int(getattr(voice, "duration", 0) or 0)
+    total = context.user_data.get("new_voice_total_seconds", 0) + duration
+    context.user_data["new_voice_total_seconds"] = total
+
     mgid = update.message.media_group_id
     if mgid:
         prev_mgid = context.user_data.get("_last_media_group_id")
@@ -539,10 +674,23 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if mgid == prev_mgid:
             return COLLECTING_SAMPLES
 
-    await update.message.reply_text(
-        f"דגימה {len(samples)} התקבלה. "
-        f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/25)."
-    )
+    if mode == MODE_PREMIUM:
+        need = PREMIUM_MIN_TOTAL_SECONDS - total
+        if need > 0:
+            await update.message.reply_text(
+                f"דגימה {len(samples)} התקבלה (סה\"כ {total} שניות, חסרות עוד {need} שניות).\n"
+                "שלח/י עוד או /done."
+            )
+        else:
+            await update.message.reply_text(
+                f"דגימה {len(samples)} התקבלה (סה\"כ {total} שניות, מספיק לאימון).\n"
+                "אפשר לשלוח עוד או /done."
+            )
+    else:
+        await update.message.reply_text(
+            f"דגימה {len(samples)} התקבלה. "
+            f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/25)."
+        )
     return COLLECTING_SAMPLES
 
 
@@ -550,13 +698,19 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
     samples = context.user_data.get("new_voice_samples", [])
     name = context.user_data.get("new_voice_name", "ללא שם")
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
+    total = context.user_data.get("new_voice_total_seconds", 0)
 
     if not samples:
         await update.message.reply_text("לא התקבלו דגימות. שלח/י לפחות הקלטה אחת.")
         return COLLECTING_SAMPLES
 
-    await update.message.reply_text(f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע.")
-    await update.message.reply_chat_action("typing")
+    if mode == MODE_PREMIUM and total < PREMIUM_MIN_TOTAL_SECONDS:
+        await update.message.reply_text(
+            f"דרוש סה\"כ {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות. נשלחו רק {total} שניות. "
+            "שלח/י עוד דגימות או /cancel."
+        )
+        return COLLECTING_SAMPLES
 
     try:
         sample_urls = []
@@ -565,28 +719,53 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             url = upload_sample(user_id, filename, data)
             sample_urls.append(url)
 
-        elevenlabs_voice_id = clone_voice(name, samples)
-        logger.info("Cloned voice %s -> %s", name, elevenlabs_voice_id)
+        if mode == MODE_PREMIUM:
+            voice_doc_id = await create_voice(
+                user_id, name, "", sample_urls,
+                kind="rvc", training_status="training",
+            )
+            try:
+                rvc_client.spawn_training(voice_doc_id, sample_urls)
+            except Exception:
+                logger.exception("Failed to spawn RVC training")
+                await set_voice_training_status(voice_doc_id, "failed", error="spawn failed")
+                await update.message.reply_text(
+                    "לא הצלחתי להתחיל את האימון. בדוק/י את ההגדרות של Modal."
+                )
+                return ConversationHandler.END
 
-        voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
-        await set_active_voice(user_id, voice_doc_id)
-
-        await update.message.reply_text(
-            f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
-            "השתמש/י ב-/voices כדי לעבור בין קולות."
-        )
+            await update.message.reply_text(
+                f"הקול \"{name}\" נשלח לאימון.\n"
+                f"האימון לוקח 15-60 דקות, אשלח לך הודעה כשיהיה מוכן."
+            )
+        else:
+            await update.message.reply_text(
+                f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע."
+            )
+            await update.message.reply_chat_action("typing")
+            elevenlabs_voice_id = clone_voice(name, samples)
+            logger.info("Cloned voice %s -> %s", name, elevenlabs_voice_id)
+            voice_doc_id = await create_voice(
+                user_id, name, elevenlabs_voice_id, sample_urls,
+                kind="elevenlabs", training_status="ready",
+            )
+            await set_active_voice(user_id, voice_doc_id)
+            await update.message.reply_text(
+                f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
+                "השתמש/י ב-/voices כדי לעבור בין קולות."
+            )
     except Exception:
         logger.exception("Voice creation failed")
         await update.message.reply_text("יצירת הקול נכשלה. נסה/י שוב.")
 
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
+    for k in ("new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds"):
+        context.user_data.pop(k, None)
     return ConversationHandler.END
 
 
 async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
+    for k in ("new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds"):
+        context.user_data.pop(k, None)
     await update.message.reply_text("יצירת הקול בוטלה.")
     return ConversationHandler.END
 
@@ -643,8 +822,14 @@ async def cmd_dialogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
+    if await get_user_mode(user_id) == MODE_PREMIUM:
+        await update.message.reply_text(
+            "/dialogue זמין רק במצב Casual. עבור/י ב-/settings."
+        )
+        return ConversationHandler.END
+
     system_voices = await get_system_voices()
-    custom_voices = await get_user_voices(user_id)
+    custom_voices = await get_user_voices(user_id, kind="elevenlabs")
     all_voices = system_voices + custom_voices
 
     context.user_data["dialogue_available"] = all_voices
@@ -904,6 +1089,12 @@ LANG_OPTIONS = {
 }
 
 
+MODE_LABELS = {
+    MODE_CASUAL: "Casual",
+    MODE_PREMIUM: "Premium",
+}
+
+
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not await is_authorized(user_id):
@@ -911,7 +1102,13 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     settings = await get_user_settings(user_id)
+    mode = await get_user_mode(user_id)
     lang_name = LANG_OPTIONS.get(settings["language"], settings["language"])
+
+    mode_buttons = []
+    for code, label in MODE_LABELS.items():
+        prefix = ">> " if mode == code else ""
+        mode_buttons.append(InlineKeyboardButton(prefix + label, callback_data=f"set_mode:{code}"))
 
     speed_buttons = []
     for s in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]:
@@ -923,15 +1120,53 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         label = f"{'>> ' if settings['language'] == code else ''}{name}"
         lang_buttons.append(InlineKeyboardButton(label, callback_data=f"set_lang:{code}"))
 
-    buttons = [speed_buttons[:3], speed_buttons[3:], lang_buttons[:3], lang_buttons[3:]]
+    buttons = [
+        mode_buttons,
+        speed_buttons[:3],
+        speed_buttons[3:],
+        lang_buttons[:3],
+        lang_buttons[3:],
+    ]
 
     await update.message.reply_text(
-        f"הגדרות נוכחיות:\n"
+        "הגדרות נוכחיות:\n"
+        f"מצב: {MODE_LABELS.get(mode, mode)}\n"
         f"מהירות: {settings['speed']}x\n"
         f"שפה: {lang_name}\n\n"
+        "Casual = מהיר וזול (ElevenLabs)\n"
+        "Premium = איכות מקסימלית (RVC, אימון 15-60 דק)\n\n"
         "בחר/י להגדיר:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+
+
+async def handle_set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    mode = query.data.replace("set_mode:", "")
+    if mode not in MODE_LABELS:
+        return
+    user_id = query.from_user.id
+    await set_user_mode(user_id, mode)
+    await set_active_voice(user_id, None)
+
+    if mode == MODE_PREMIUM:
+        if not rvc_client.is_enabled():
+            await query.edit_message_text(
+                "מצב Premium לא זמין כרגע (Modal לא מוגדר). חזרת ל-Casual."
+            )
+            await set_user_mode(user_id, MODE_CASUAL)
+            return
+        voices = await get_user_voices(user_id, kind="rvc")
+        ready = [v for v in voices if v.get("training_status") == "ready"]
+        extra = ""
+        if not ready:
+            extra = "\nאין לך עדיין קולות Premium. צור/י קול חדש עם /newvoice."
+        await query.edit_message_text(
+            f"מצב Premium הופעל.{extra}"
+        )
+    else:
+        await query.edit_message_text("מצב Casual הופעל.")
 
 
 async def handle_set_speed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -959,7 +1194,13 @@ async def cmd_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    custom_voices = await get_user_voices(user_id)
+    if await get_user_mode(user_id) == MODE_PREMIUM:
+        await update.message.reply_text(
+            "/enhance זמין רק במצב Casual. עבור/י ב-/settings."
+        )
+        return ConversationHandler.END
+
+    custom_voices = await get_user_voices(user_id, kind="elevenlabs")
     if not custom_voices:
         await update.message.reply_text(
             "אין לך קולות מותאמים לשיפור.\n"
@@ -1083,7 +1324,10 @@ async def handle_enhance_save(update: Update, context: ContextTypes.DEFAULT_TYPE
         real_voice_id = saved_voice.voice_id
         logger.info("Saved enhanced voice: %s -> %s", generated_voice_id, real_voice_id)
 
-        voice_doc_id = await create_voice(user_id, new_name, real_voice_id, [])
+        voice_doc_id = await create_voice(
+            user_id, new_name, real_voice_id, [],
+            kind="elevenlabs", training_status="ready",
+        )
         await set_active_voice(user_id, voice_doc_id)
 
         await query.edit_message_text(
@@ -1162,6 +1406,36 @@ async def cmd_noeffects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def post_init(application) -> None:
     await seed_system_voices()
     logger.info("System voices seeded")
+    if application.job_queue:
+        application.job_queue.run_repeating(check_training_jobs, interval=30, first=15)
+        logger.info("Training notification poll scheduled")
+
+
+async def check_training_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Poll DB for newly finished RVC trainings and DM the owner."""
+    try:
+        voices = await find_unnotified_finished_voices()
+    except Exception:
+        logger.exception("Failed to query finished voices")
+        return
+    for v in voices:
+        try:
+            if v["training_status"] == "ready":
+                msg = (
+                    f"הקול Premium \"{v['name']}\" מוכן!\n"
+                    "השתמש/י ב-/voices כדי להפעיל אותו."
+                )
+            else:
+                err = v.get("training_error") or ""
+                err_suffix = f"\nסיבה: {err[:200]}" if err else ""
+                msg = (
+                    f"האימון של הקול \"{v['name']}\" נכשל.{err_suffix}\n"
+                    "אפשר לנסות ליצור אותו מחדש עם /newvoice."
+                )
+            await context.bot.send_message(chat_id=v["telegram_id"], text=msg)
+            await mark_voice_notified(v["id"])
+        except Exception:
+            logger.exception("Failed to notify user %s for voice %s", v["telegram_id"], v["id"])
 
 
 def main() -> None:
@@ -1261,6 +1535,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
     app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CallbackQueryHandler(handle_set_mode, pattern=r"^set_mode:"))
     app.add_handler(CallbackQueryHandler(handle_set_speed, pattern=r"^set_speed:"))
     app.add_handler(CallbackQueryHandler(handle_set_lang, pattern=r"^set_lang:"))
     app.add_handler(CommandHandler("voices", cmd_voices))

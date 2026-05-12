@@ -120,6 +120,8 @@ export default function Voices() {
             <tr>
               <th>Name</th>
               <th>Telegram ID</th>
+              <th>Kind</th>
+              <th>Status</th>
               <th>ElevenLabs Voice ID</th>
               <th>Created</th>
             </tr>
@@ -129,7 +131,17 @@ export default function Voices() {
               <tr key={i}>
                 <td>{v.name}</td>
                 <td>{v.telegram_id}</td>
-                <td className="text-cell">{v.elevenlabs_voice_id}</td>
+                <td>
+                  <span className={`badge badge-${v.kind || "elevenlabs"}`}>
+                    {(v.kind || "elevenlabs") === "rvc" ? "Premium" : "Casual"}
+                  </span>
+                </td>
+                <td>
+                  <span className={`badge badge-status-${v.training_status || "ready"}`}>
+                    {v.training_status || "ready"}
+                  </span>
+                </td>
+                <td className="text-cell">{v.elevenlabs_voice_id || "—"}</td>
                 <td className="nowrap">{formatDate(v.created_at)}</td>
               </tr>
             ))}
