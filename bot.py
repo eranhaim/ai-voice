@@ -71,7 +71,7 @@ PREMIUM_MIN_TOTAL_SECONDS = 5 * 60
 
 # Neutral, expressive ElevenLabs voice used as the *source* for premium TTS.
 # RVC fully replaces the timbre, so the source voice only needs clean prosody.
-RVC_SOURCE_VOICE_ID = os.getenv("RVC_SOURCE_VOICE_ID", "Sm1seazb4gs7RSlUVw7c")
+RVC_SOURCE_VOICE_ID = os.getenv("RVC_SOURCE_VOICE_ID", "iBGtO8PxvJtBWB3yLkrH")
 
 WAITING_PROMPT = 10
 WAITING_EFFECT = 11
