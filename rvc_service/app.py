@@ -46,7 +46,9 @@ image = (
         "pymongo",
         "tqdm",
         "Cython",
-        "matplotlib",
+        # matplotlib 3.10 removed FigureCanvasAgg.tostring_rgb which RVC's
+        # train.py still calls via utils.plot_spectrogram_to_numpy().
+        "matplotlib<3.9",
         "tensorboardX",
         "pydub",
         "ffmpeg-python",

@@ -77,8 +77,19 @@ def _download_samples(sample_urls: list[str], dest_dir: str) -> int:
     return count
 
 
-def _run(cmd: list[str], cwd: str = RVC_HOME, check: bool = True) -> int:
-    """Run a subprocess streaming its output to the Modal logs."""
+def _run(
+    cmd: list[str],
+    cwd: str = RVC_HOME,
+    check: bool = True,
+    detect_child_crash: bool = False,
+) -> int:
+    """Run a subprocess streaming its output to the Modal logs.
+
+    If ``detect_child_crash`` is set, scan for ``Process-N: Traceback`` and
+    ``AttributeError/RuntimeError/Exception`` patterns coming from worker
+    multiprocessing children whose failures the parent process swallows
+    (RVC's train.py is the main offender).
+    """
     _log("$ " + " ".join(cmd))
     proc = subprocess.Popen(
         cmd,
@@ -90,20 +101,38 @@ def _run(cmd: list[str], cwd: str = RVC_HOME, check: bool = True) -> int:
     )
     assert proc.stdout is not None
     last_lines: list[str] = []
+    child_crash: str | None = None
+    saw_process_traceback = False
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
             continue
         _log(line)
         last_lines.append(line)
-        if len(last_lines) > 40:
+        if len(last_lines) > 80:
             last_lines.pop(0)
+        if detect_child_crash:
+            if line.startswith("Process ") and "Traceback" in line:
+                saw_process_traceback = True
+            elif saw_process_traceback and (
+                line.startswith("AttributeError")
+                or line.startswith("RuntimeError")
+                or line.startswith("TypeError")
+                or line.startswith("ValueError")
+                or line.startswith("KeyError")
+                or line.startswith("Exception")
+                or line.startswith("OSError")
+            ):
+                child_crash = line
+                saw_process_traceback = False
     proc.wait()
     if check and proc.returncode != 0:
         tail = " | ".join(last_lines[-10:])
         raise RuntimeError(
             f"command failed (rc={proc.returncode}): {' '.join(cmd)} :: {tail}"
         )
+    if check and child_crash:
+        raise RuntimeError(f"subprocess child crashed: {child_crash}")
     return proc.returncode
 
 
@@ -161,6 +190,10 @@ def run_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150) 
         _build_filelist(logs_dir, exp_name)
 
         # 5. Train. Uses pretrained_v2 40k with f0.
+        # RVC trainer spawns the actual training as a multiprocessing child
+        # and exits the parent process with code 0 even when the child crashed
+        # (it relies on the child calling os._exit on success). We detect the
+        # crash by scanning subprocess output for Process-N tracebacks.
         save_every = max(total_epoch // 3, 25)
         _run([
             sys.executable, "infer/modules/train/train.py",
@@ -175,9 +208,9 @@ def run_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150) 
             "-pd", "assets/pretrained_v2/f0D40k.pth",
             "-l", "1",
             "-c", "0",
-            "-sw", "0",
+            "-sw", "1",
             "-v", "v2",
-        ])
+        ], detect_child_crash=True)
 
         # 6. Build faiss index from extracted features.
         _build_index(logs_dir, exp_name)
