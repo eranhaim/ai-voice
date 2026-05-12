@@ -53,7 +53,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[flirty CASUAL ISRAELI ACCENT girl, addressing a male]"
+DEFAULT_AUDIO_TAG = "[flirty natural girl, addressing a male]"
 MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
@@ -89,7 +89,7 @@ def text_to_speech(text: str, voice_id: str, audio_tag: str = "", speed: float =
     client = _get_elevenlabs()
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
-    voice_settings = {"stability": 0.7, "similarity_boost": 0.75, "style": 0.0, "speed": speed}
+    voice_settings = {"stability": 0.6, "similarity_boost": 0.95, "style": 0.3, "speed": speed}
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
@@ -111,7 +111,7 @@ def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.8, "style": 0.0}',
+        voice_settings='{"stability": 0.5, "similarity_boost": 0.9, "style": 0.3}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
