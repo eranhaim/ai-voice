@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY db.py .
 COPY s3.py .
+COPY rvc_client.py .
 COPY bot.py .
 
 CMD ["python", "bot.py"]
