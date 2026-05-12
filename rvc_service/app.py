@@ -22,6 +22,14 @@ image = (
         "build-essential",
         "libsndfile1",
     )
+    .run_commands(
+        "python -m pip install --upgrade 'pip<24.1'",
+    )
+    .pip_install(
+        "omegaconf==2.0.6",
+        "hydra-core==1.0.7",
+        "antlr4-python3-runtime==4.8",
+    )
     .pip_install(
         "torch==2.1.0",
         "torchaudio==2.1.0",
