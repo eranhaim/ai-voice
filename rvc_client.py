@@ -28,7 +28,7 @@ def _convert_fn():
     return modal.Function.from_name(APP_NAME, "convert")
 
 
-def spawn_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150) -> str | None:
+def spawn_training(voice_id: str, sample_urls: list[str], total_epoch: int = 300) -> str | None:
     """Kick off RVC training in the background. Returns a Modal call id or None.
 
     Status updates land directly in MongoDB via the Modal function, so we don't
@@ -46,12 +46,24 @@ def spawn_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150
         raise
 
 
-def convert_audio(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> bytes:
+def convert_audio(
+    voice_id: str,
+    audio_bytes: bytes,
+    f0_up_key: int = 0,
+    index_rate: float = 0.95,
+    rms_mix_rate: float = 0.05,
+    protect: float = 0.33,
+    filter_radius: int = 3,
+) -> bytes:
     """Synchronously convert audio to the target RVC voice. Returns mp3 bytes."""
     if not is_enabled():
         raise RuntimeError("Modal not configured (MODAL_TOKEN_ID/SECRET missing)")
     fn = _convert_fn()
-    result = fn.remote(voice_id, audio_bytes, f0_up_key)
+    result = fn.remote(
+        voice_id, audio_bytes, int(f0_up_key),
+        float(index_rate), float(rms_mix_rate),
+        float(protect), int(filter_radius),
+    )
     if not result:
         raise RuntimeError("RVC convert returned empty audio")
     return result

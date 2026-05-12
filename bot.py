@@ -39,6 +39,7 @@ from db import (
     get_voice_by_id,
     delete_voice,
     set_voice_training_status,
+    set_voice_pitch_shift,
     find_unnotified_finished_voices,
     mark_voice_notified,
     get_system_voices,
@@ -80,7 +81,32 @@ SELECTING_ENHANCE_VOICE, WRITING_ENHANCE_PROMPT, CONFIRMING_ENHANCE = 14, 15, 16
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
-WAITING_NAME, COLLECTING_SAMPLES = range(2)
+WAITING_NAME, WAITING_PITCH, COLLECTING_SAMPLES = range(3)
+
+# Pitch shift presets shown to the user when picking a Premium voice gender.
+# (label, semitones)
+PITCH_PRESETS: list[tuple[str, int]] = [
+    ("⬆⬆ +12  (מקור גבר → קול נשי)", 12),
+    ("⬆  +2  (קצת למעלה)", 2),
+    ("=  0  (אותו מגדר)", 0),
+    ("⬇  -2  (קצת למטה)", -2),
+    ("⬇⬇ -12  (מקור אישה → קול גברי)", -12),
+]
+
+
+def _pitch_label(shift: int) -> str:
+    for label, val in PITCH_PRESETS:
+        if val == shift:
+            return label
+    return f"{shift:+d}"
+
+
+def _pitch_keyboard(prefix: str, current: int | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    for label, val in PITCH_PRESETS:
+        marker = "✓ " if current is not None and val == current else ""
+        rows.append([InlineKeyboardButton(marker + label, callback_data=f"{prefix}:{val}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _get_elevenlabs() -> ElevenLabs:
@@ -367,7 +393,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
                 return
             await update.message.reply_chat_action("record_voice")
-            audio_data = rvc_client.convert_audio(active["id"], tts_audio)
+            audio_data = rvc_client.convert_audio(
+                active["id"], tts_audio,
+                f0_up_key=int(active.get("pitch_shift", 0)),
+            )
             vname = active["name"]
         else:
             voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
@@ -434,7 +463,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await update.message.reply_text("הקול עוד באימון. ננסה לעדכן אותך כשמוכן.")
                 return
             logger.info("Premium STS from %d voice=%s dur=%ss", user_id, active["id"], voice.duration)
-            converted = rvc_client.convert_audio(active["id"], audio_bytes)
+            converted = rvc_client.convert_audio(
+                active["id"], audio_bytes,
+                f0_up_key=int(active.get("pitch_shift", 0)),
+            )
             vname = active["name"]
         else:
             voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
@@ -468,7 +500,7 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)"
 
     if mode == MODE_PREMIUM:
-        header = "מצב Premium — קולות איכותיים מאומנים\n(>> מסמן את הנוכחי)"
+        header = "מצב Premium — קולות איכותיים מאומנים\n(>> מסמן את הנוכחי, 🎚 לכיוונון גובה)"
         custom = await get_user_voices(user_id, kind="rvc")
         if not custom:
             await update.message.reply_text(
@@ -480,7 +512,10 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             is_active = v["id"] == active_doc_id
             if status == "ready":
                 label = (">> " if is_active else "") + v["name"]
-                buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+                buttons.append([
+                    InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}"),
+                    InlineKeyboardButton("🎚", callback_data=f"voice_tune:{v['id']}"),
+                ])
             else:
                 badge = "(באימון)" if status == "training" else "(נכשל)"
                 label = f"{v['name']} {badge}"
@@ -523,6 +558,43 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await set_active_voice(user_id, data)
     await query.edit_message_text(f"עברת לקול: {voice['name']}")
+
+
+async def handle_voice_tune(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the pitch-shift menu for an existing premium voice."""
+    query = update.callback_query
+    await query.answer()
+    voice_id = query.data.replace("voice_tune:", "")
+    voice = await get_voice_by_id(voice_id)
+    if not voice or voice.get("kind") != "rvc":
+        await query.edit_message_text("הקול לא נמצא.")
+        return
+    current = int(voice.get("pitch_shift", 0))
+    await query.edit_message_text(
+        f"כיוונון גובה לקול \"{voice['name']}\":\n"
+        f"כיוון נוכחי: {_pitch_label(current)}",
+        reply_markup=_pitch_keyboard(f"voice_pitch:{voice_id}", current=current),
+    )
+
+
+async def handle_voice_pitch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Persist the chosen pitch shift for an existing premium voice."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, voice_id, raw_shift = query.data.split(":", 2)
+        shift = int(raw_shift)
+    except (ValueError, IndexError):
+        await query.edit_message_text("שגיאה בבחירה.")
+        return
+    voice = await get_voice_by_id(voice_id)
+    if not voice or voice.get("kind") != "rvc":
+        await query.edit_message_text("הקול לא נמצא.")
+        return
+    await set_voice_pitch_shift(voice_id, shift)
+    await query.edit_message_text(
+        f"שמרתי כיוונון גובה לקול \"{voice['name']}\": {_pitch_label(shift)}"
+    )
 
 
 # ── /deletevoice — remove a custom voice ─────────────────────────────────────
@@ -614,16 +686,17 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["new_voice_name"] = name
     context.user_data["new_voice_samples"] = []
     context.user_data["new_voice_total_seconds"] = 0
+    context.user_data["new_voice_pitch_shift"] = 0
 
     mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
     if mode == MODE_PREMIUM:
         await update.message.reply_text(
             f"שם הקול: {name}\n\n"
-            "שלח/י דגימות קוליות. אפשר כמה קבצים בבת אחת.\n"
-            f"דרוש סה\"כ {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות לפחות לאיכות מקסימלית.\n"
-            f"כל הקלטה לפחות {MIN_SAMPLE_DURATION} שניות.\n"
-            "שלח/י /done בסיום, או /cancel לביטול."
+            "בחר/י איך להתאים את גובה הצליל בעת ההמרה.\n"
+            "אפשר תמיד לשנות אחר כך מתוך /voices.",
+            reply_markup=_pitch_keyboard("newvoice_pitch", current=0),
         )
+        return WAITING_PITCH
     else:
         await update.message.reply_text(
             f"שם הקול: {name}\n\n"
@@ -632,6 +705,26 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
             "שלח/י /done בסיום, או /cancel לביטול."
         )
+    return COLLECTING_SAMPLES
+
+
+async def newvoice_pitch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    try:
+        shift = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        shift = 0
+    context.user_data["new_voice_pitch_shift"] = shift
+    name = context.user_data.get("new_voice_name", "")
+    await query.edit_message_text(
+        f"שם הקול: {name}\n"
+        f"כיוונון גובה: {_pitch_label(shift)}\n\n"
+        f"שלח/י דגימות קוליות. אפשר כמה קבצים בבת אחת.\n"
+        f"דרוש סה\"כ {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות לפחות לאיכות מקסימלית.\n"
+        f"כל הקלטה לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+        "שלח/י /done בסיום, או /cancel לביטול."
+    )
     return COLLECTING_SAMPLES
 
 
@@ -720,9 +813,11 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             sample_urls.append(url)
 
         if mode == MODE_PREMIUM:
+            pitch_shift = int(context.user_data.get("new_voice_pitch_shift", 0))
             voice_doc_id = await create_voice(
                 user_id, name, "", sample_urls,
                 kind="rvc", training_status="training",
+                pitch_shift=pitch_shift,
             )
             try:
                 rvc_client.spawn_training(voice_doc_id, sample_urls)
@@ -758,13 +853,19 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         logger.exception("Voice creation failed")
         await update.message.reply_text("יצירת הקול נכשלה. נסה/י שוב.")
 
-    for k in ("new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds"):
+    for k in (
+        "new_voice_name", "new_voice_samples", "new_voice_mode",
+        "new_voice_total_seconds", "new_voice_pitch_shift",
+    ):
         context.user_data.pop(k, None)
     return ConversationHandler.END
 
 
 async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    for k in ("new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds"):
+    for k in (
+        "new_voice_name", "new_voice_samples", "new_voice_mode",
+        "new_voice_total_seconds", "new_voice_pitch_shift",
+    ):
         context.user_data.pop(k, None)
     await update.message.reply_text("יצירת הקול בוטלה.")
     return ConversationHandler.END
@@ -1454,6 +1555,7 @@ def main() -> None:
         entry_points=[CommandHandler("newvoice", newvoice_start)],
         states={
             WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, newvoice_name)],
+            WAITING_PITCH: [CallbackQueryHandler(newvoice_pitch, pattern=r"^newvoice_pitch:")],
             COLLECTING_SAMPLES: [
                 MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, newvoice_sample),
                 CommandHandler("done", newvoice_done),
@@ -1542,6 +1644,8 @@ def main() -> None:
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
     app.add_handler(CallbackQueryHandler(handle_voice_delete, pattern=r"^voice_delete:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune, pattern=r"^voice_tune:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_pitch, pattern=r"^voice_pitch:"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 

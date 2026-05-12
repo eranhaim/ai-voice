@@ -188,6 +188,7 @@ async def get_active_voice_doc(telegram_id: int) -> dict | None:
         "training_status": cv.get("training_status", "ready"),
         "rvc_model_url": cv.get("rvc_model_url"),
         "rvc_index_url": cv.get("rvc_index_url"),
+        "pitch_shift": int(cv.get("pitch_shift", 0)),
     }
 
 
@@ -242,6 +243,7 @@ async def create_voice(
     sample_urls: list[str],
     kind: str = "elevenlabs",
     training_status: str = "ready",
+    pitch_shift: int = 0,
 ) -> str:
     db = get_db()
     result = await db.voices.insert_one({
@@ -252,9 +254,18 @@ async def create_voice(
         "kind": kind,
         "training_status": training_status,
         "training_notified": training_status == "ready",
+        "pitch_shift": int(pitch_shift),
         "created_at": datetime.now(timezone.utc),
     })
     return str(result.inserted_id)
+
+
+async def set_voice_pitch_shift(voice_doc_id: str, pitch_shift: int) -> None:
+    db = get_db()
+    await db.voices.update_one(
+        {"_id": ObjectId(voice_doc_id)},
+        {"$set": {"pitch_shift": int(pitch_shift)}},
+    )
 
 
 async def get_user_voices(telegram_id: int, kind: str | None = None) -> list[dict]:
@@ -275,6 +286,7 @@ async def get_user_voices(telegram_id: int, kind: str | None = None) -> list[dic
             "sample_urls": doc.get("sample_urls", []),
             "rvc_model_url": doc.get("rvc_model_url"),
             "rvc_index_url": doc.get("rvc_index_url"),
+            "pitch_shift": int(doc.get("pitch_shift", 0)),
             "created_at": doc["created_at"],
         })
     return voices
@@ -307,6 +319,7 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
         "sample_urls": doc.get("sample_urls", []),
         "rvc_model_url": doc.get("rvc_model_url"),
         "rvc_index_url": doc.get("rvc_index_url"),
+        "pitch_shift": int(doc.get("pitch_shift", 0)),
     }
 
 

@@ -90,7 +90,7 @@ SECRET = modal.Secret.from_name("ai-voice")
     timeout=4 * 3600,
     secrets=[SECRET],
 )
-def train_voice(voice_id: str, sample_urls: list[str], total_epoch: int = 150) -> dict:
+def train_voice(voice_id: str, sample_urls: list[str], total_epoch: int = 300) -> dict:
     """Train an RVC model for the given voice. Long-running (15-60 min).
 
     Updates MongoDB voices doc with training_status=ready|failed and stores
@@ -108,10 +108,25 @@ def train_voice(voice_id: str, sample_urls: list[str], total_epoch: int = 150) -
     secrets=[SECRET],
     min_containers=1,
 )
-def convert(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> bytes:
+def convert(
+    voice_id: str,
+    audio_bytes: bytes,
+    f0_up_key: int = 0,
+    index_rate: float = 0.95,
+    rms_mix_rate: float = 0.05,
+    protect: float = 0.33,
+    filter_radius: int = 3,
+) -> bytes:
     """Convert input audio to the target RVC voice. Returns mp3 bytes."""
     from rvc_service.inference import run_inference
-    return run_inference(voice_id, audio_bytes, f0_up_key)
+    return run_inference(
+        voice_id, audio_bytes,
+        f0_up_key=f0_up_key,
+        index_rate=index_rate,
+        rms_mix_rate=rms_mix_rate,
+        protect=protect,
+        filter_radius=filter_radius,
+    )
 
 
 @app.local_entrypoint()

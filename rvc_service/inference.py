@@ -103,7 +103,15 @@ def _get_vc(voice_id: str, model_path: str):
     return vc
 
 
-def run_inference(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> bytes:
+def run_inference(
+    voice_id: str,
+    audio_bytes: bytes,
+    f0_up_key: int = 0,
+    index_rate: float = 0.95,
+    rms_mix_rate: float = 0.05,
+    protect: float = 0.33,
+    filter_radius: int = 3,
+) -> bytes:
     model_path, index_path = _ensure_model(voice_id)
 
     workdir = tempfile.mkdtemp(prefix="rvc_inf_")
@@ -136,11 +144,11 @@ def run_inference(voice_id: str, audio_bytes: bytes, f0_up_key: int = 0) -> byte
                 "rmvpe",            # f0_method
                 index_path,         # file_index
                 "",                 # file_index2 (deprecated)
-                0.75,               # index_rate
-                3,                  # filter_radius
+                index_rate,
+                filter_radius,
                 0,                  # resample_sr (0 keeps native)
-                0.25,               # rms_mix_rate
-                0.33,               # protect
+                rms_mix_rate,
+                protect,
             )
         except Exception:
             _log("vc_single failed")

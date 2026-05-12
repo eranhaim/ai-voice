@@ -141,7 +141,7 @@ def _upload(bucket: str, key: str, local_path: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
-def run_training(voice_id: str, sample_urls: list[str], total_epoch: int = 150) -> dict:
+def run_training(voice_id: str, sample_urls: list[str], total_epoch: int = 300) -> dict:
     bucket = os.environ["AWS_S3_BUCKET"]
     exp_name = f"voice_{voice_id}"
     workdir = tempfile.mkdtemp(prefix="rvc_")
