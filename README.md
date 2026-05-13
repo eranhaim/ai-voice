@@ -5,6 +5,15 @@ A Telegram bot that converts text to speech (Hebrew female voice) and converts v
 - **Send text** -> bot replies with a spoken voice message
 - **Send a voice recording** -> bot converts it to a female voice and sends it back
 
+## Modes
+
+`/settings` lets each user pick between two modes:
+
+- **Casual** — Default. Uses ElevenLabs *Instant Voice Clone* (IVC). Fast, only needs a few seconds of audio, voice is ready immediately.
+- **Premium** — Uses ElevenLabs *Professional Voice Clone* (PVC). Requires at least 30 minutes of clean audio per voice, an in-Telegram captcha verification step, and waiting hours for fine-tuning to complete. The result is the highest-fidelity clone ElevenLabs offers.
+
+PVC requires the ElevenLabs Creator tier or higher (each PVC slot eats into the account's professional-voice quota). The bot polls training status every 5 minutes via a JobQueue and DMs the owner when each Premium voice is ready.
+
 ---
 
 ## Run Locally

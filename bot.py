@@ -29,15 +29,28 @@ from db import (
     set_user_effect,
     get_user_settings,
     set_user_settings,
+    get_user_mode,
+    set_user_mode,
+    voice_kind_for_mode,
+    get_active_voice_doc,
     set_active_voice,
     create_voice,
     get_user_voices,
     get_voice_by_id,
     delete_voice,
+    set_voice_training_status,
+    find_pvc_voices_in_progress,
+    find_unnotified_finished_voices,
+    mark_voice_notified,
     get_system_voices,
     seed_system_voices,
+    MODE_CASUAL,
+    MODE_PREMIUM,
+    VOICE_KIND_IVC,
+    VOICE_KIND_PVC,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
+import elevenlabs_pvc
 
 load_dotenv()
 
@@ -56,6 +69,10 @@ STS_MODEL = "eleven_multilingual_sts_v2"
 DEFAULT_AUDIO_TAG = "[flirty natural girl, addressing a male]"
 MIN_SAMPLE_DURATION = 5
 
+# Premium mode (PVC) needs a lot of clean audio per voice.
+PREMIUM_MIN_TOTAL_SECONDS = 30 * 60
+PREMIUM_MAX_CAPTCHA_ATTEMPTS = 3
+
 WAITING_PROMPT = 10
 WAITING_EFFECT = 11
 SELECTING_DIALOGUE_VOICES, CHOOSING_DIALOGUE_MODE, WRITING_DIALOGUE, RECORDING_DIALOGUE_STS, PICKING_DIALOGUE_VOICE_FOR_TURN = 12, 13, 20, 21, 22
@@ -63,7 +80,7 @@ SELECTING_ENHANCE_VOICE, WRITING_ENHANCE_PROMPT, CONFIRMING_ENHANCE = 14, 15, 16
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
-WAITING_NAME, COLLECTING_SAMPLES = range(2)
+WAITING_NAME, COLLECTING_SAMPLES, AWAITING_PVC_CAPTCHA = range(3)
 
 
 def _get_elevenlabs() -> ElevenLabs:
@@ -292,7 +309,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newvoice — יצירת קול חדש מהקלטות\n"
         "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
-        "/settings — מהירות דיבור ושפה\n"
+        "/settings — מצב (Casual/Premium), מהירות ושפה\n"
         "/enhance — שיפור קול קיים עם הנחיה\n"
         "/dialogue — יצירת שיחה עם מספר קולות\n"
         "/effects — הוספת אפקט קולי ברקע\n"
@@ -389,29 +406,60 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # ── /voices — select active voice ────────────────────────────────────────────
 
+_TRAINING_STATUS_BADGE = {
+    "uploading": "(מעלה דגימות)",
+    "verifying": "(ממתין לאימות)",
+    "training": "(באימון)",
+    "failed": "(נכשל)",
+}
+
+
 async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not await is_authorized(user_id):
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return
 
+    mode = await get_user_mode(user_id)
     current_voice_id = await get_user_voice_id(user_id)
-    system_voices = await get_system_voices()
-    custom_voices = await get_user_voices(user_id)
+    buttons: list[list[InlineKeyboardButton]] = []
 
-    buttons = []
-    for sv in system_voices:
-        is_active = sv["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + sv["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
-
-    for v in custom_voices:
-        is_active = v["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + v["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+    if mode == MODE_PREMIUM:
+        custom = await get_user_voices(user_id, kind=VOICE_KIND_PVC)
+        if not custom:
+            await update.message.reply_text(
+                "אין לך עדיין קולות Premium. צור/י קול חדש עם /newvoice "
+                "(דרוש לפחות 30 דק' של דגימות, האימון לוקח עד 24 שעות)."
+            )
+            return
+        for v in custom:
+            status = v.get("training_status", "ready")
+            if status == "ready":
+                is_active = v["elevenlabs_voice_id"] == current_voice_id
+                label = (">> " if is_active else "") + v["name"]
+                buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+            else:
+                badge = _TRAINING_STATUS_BADGE.get(status, f"({status})")
+                buttons.append([InlineKeyboardButton(
+                    f"{v['name']} {badge}",
+                    callback_data="voice_select:disabled",
+                )])
+        header = "קולות Premium שלך:\n(>> מסמן את הנוכחי)"
+    else:
+        system_voices = await get_system_voices()
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
+        for sv in system_voices:
+            is_active = sv["elevenlabs_voice_id"] == current_voice_id
+            label = (">> " if is_active else "") + sv["name"]
+            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
+        for v in custom_voices:
+            is_active = v["elevenlabs_voice_id"] == current_voice_id
+            label = (">> " if is_active else "") + v["name"]
+            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+        header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)"
 
     await update.message.reply_text(
-        "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)",
+        header,
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -423,9 +471,16 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     data = query.data.replace("voice_select:", "")
 
+    if data == "disabled":
+        await query.answer("הקול עוד לא מוכן לשימוש.", show_alert=True)
+        return
+
     voice = await get_voice_by_id(data)
     if not voice:
         await query.edit_message_text("הקול לא נמצא.")
+        return
+    if voice.get("training_status", "ready") != "ready":
+        await query.answer("הקול עוד לא מוכן לשימוש.", show_alert=True)
         return
     await set_active_voice(user_id, data)
     await query.edit_message_text(f"עברת לקול: {voice['name']}")
@@ -439,14 +494,18 @@ async def cmd_deletevoice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return
 
-    voices = await get_user_voices(user_id)
+    mode = await get_user_mode(user_id)
+    kind = voice_kind_for_mode(mode)
+    voices = await get_user_voices(user_id, kind=kind)
     if not voices:
-        await update.message.reply_text("אין לך קולות מותאמים.")
+        await update.message.reply_text("אין לך קולות מותאמים במצב הזה.")
         return
 
     buttons = []
     for v in voices:
-        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}", callback_data=f"voice_delete:{v['id']}")])
+        status = v.get("training_status", "ready")
+        badge = "" if status == "ready" else " " + _TRAINING_STATUS_BADGE.get(status, f"({status})")
+        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}{badge}", callback_data=f"voice_delete:{v['id']}")])
 
     await update.message.reply_text(
         "איזה קול למחוק?",
@@ -482,7 +541,18 @@ async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    await update.message.reply_text("איזה שם לתת לקול החדש?")
+    mode = await get_user_mode(user_id)
+    context.user_data["new_voice_mode"] = mode
+
+    if mode == MODE_PREMIUM:
+        await update.message.reply_text(
+            "יצירת קול Premium (ElevenLabs PVC).\n"
+            f"דרוש לפחות {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות של הקלטות נקיות.\n"
+            "האימון לוקח עד 24 שעות. אעדכן/י אותך כשהקול מוכן.\n\n"
+            "איזה שם לתת לקול?"
+        )
+    else:
+        await update.message.reply_text("איזה שם לתת לקול החדש?")
     return WAITING_NAME
 
 
@@ -494,14 +564,26 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     context.user_data["new_voice_name"] = name
     context.user_data["new_voice_samples"] = []
+    context.user_data["new_voice_total_seconds"] = 0
 
-    await update.message.reply_text(
-        f"שם הקול: {name}\n\n"
-        "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
-        "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
-        f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
-        "שלח/י /done בסיום, או /cancel לביטול."
-    )
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
+    if mode == MODE_PREMIUM:
+        await update.message.reply_text(
+            f"שם הקול: {name}\n\n"
+            "עכשיו שלח/י הקלטות קוליות נקיות (ללא רעש רקע, ללא מוזיקה, רק קול אחד).\n"
+            f"דרוש סה\"כ לפחות {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות.\n"
+            f"כל הקלטה לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+            "אפשר לשלוח כמה קבצים ביחד בבת אחת.\n"
+            "שלח/י /done בסיום, או /cancel לביטול."
+        )
+    else:
+        await update.message.reply_text(
+            f"שם הקול: {name}\n\n"
+            "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
+            "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
+            f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
+            "שלח/י /done בסיום, או /cancel לביטול."
+        )
     return COLLECTING_SAMPLES
 
 
@@ -522,8 +604,9 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return COLLECTING_SAMPLES
 
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
     samples = context.user_data.get("new_voice_samples", [])
-    if len(samples) >= 25:
+    if mode == MODE_CASUAL and len(samples) >= 25:
         await update.message.reply_text("הגעת למקסימום 25 דגימות. שלח/י /done ליצירת הקול.")
         return COLLECTING_SAMPLES
 
@@ -532,6 +615,10 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     samples.append(bytes(data))
     context.user_data["new_voice_samples"] = samples
 
+    duration = int(getattr(voice, "duration", 0) or 0)
+    total = context.user_data.get("new_voice_total_seconds", 0) + duration
+    context.user_data["new_voice_total_seconds"] = total
+
     mgid = update.message.media_group_id
     if mgid:
         prev_mgid = context.user_data.get("_last_media_group_id")
@@ -539,23 +626,42 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if mgid == prev_mgid:
             return COLLECTING_SAMPLES
 
-    await update.message.reply_text(
-        f"דגימה {len(samples)} התקבלה. "
-        f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/25)."
-    )
+    if mode == MODE_PREMIUM:
+        minutes = total // 60
+        seconds = total % 60
+        remaining = max(PREMIUM_MIN_TOTAL_SECONDS - total, 0)
+        if remaining > 0:
+            rem_min = remaining // 60
+            rem_sec = remaining % 60
+            progress = (
+                f"דגימה {len(samples)} התקבלה.\n"
+                f"סה\"כ עד כה: {minutes}:{seconds:02d} מתוך {PREMIUM_MIN_TOTAL_SECONDS // 60}:00.\n"
+                f"חסר עוד {rem_min}:{rem_sec:02d} לפני שאפשר ליצור את הקול.\n"
+                "שלח/י עוד הקלטות או /cancel לביטול."
+            )
+        else:
+            progress = (
+                f"דגימה {len(samples)} התקבלה.\n"
+                f"סה\"כ עד כה: {minutes}:{seconds:02d}. הגעת למינימום!\n"
+                "אפשר להמשיך לשלוח עוד הקלטות (יותר זה יותר טוב) או /done ליצירת הקול."
+            )
+        await update.message.reply_text(progress)
+    else:
+        await update.message.reply_text(
+            f"דגימה {len(samples)} התקבלה. "
+            f"שלח/י עוד או /done ליצירת הקול ({len(samples)}/25)."
+        )
     return COLLECTING_SAMPLES
 
 
-async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     samples = context.user_data.get("new_voice_samples", [])
     name = context.user_data.get("new_voice_name", "ללא שם")
 
-    if not samples:
-        await update.message.reply_text("לא התקבלו דגימות. שלח/י לפחות הקלטה אחת.")
-        return COLLECTING_SAMPLES
-
-    await update.message.reply_text(f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע.")
+    await update.message.reply_text(
+        f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע."
+    )
     await update.message.reply_chat_action("typing")
 
     try:
@@ -578,15 +684,188 @@ async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     except Exception:
         logger.exception("Voice creation failed")
         await update.message.reply_text("יצירת הקול נכשלה. נסה/י שוב.")
-
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
     return ConversationHandler.END
 
 
+async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    samples = context.user_data.get("new_voice_samples", [])
+    name = context.user_data.get("new_voice_name", "ללא שם")
+    total = context.user_data.get("new_voice_total_seconds", 0)
+
+    if total < PREMIUM_MIN_TOTAL_SECONDS:
+        rem = PREMIUM_MIN_TOTAL_SECONDS - total
+        await update.message.reply_text(
+            f"אין מספיק חומר. חסר עוד {rem // 60}:{rem % 60:02d} עד למינימום של "
+            f"{PREMIUM_MIN_TOTAL_SECONDS // 60} דקות. שלח/י עוד הקלטות או /cancel."
+        )
+        return COLLECTING_SAMPLES
+
+    await update.message.reply_text(
+        f"יוצר את הקול הפרימיום \"{name}\" מ-{len(samples)} דגימות "
+        f"({total // 60}:{total % 60:02d}).\n"
+        "מעלה ל-ElevenLabs..."
+    )
+    await update.message.reply_chat_action("typing")
+
+    user_lang = (await get_user_settings(user_id)).get("language", "he")
+
+    try:
+        sample_urls = []
+        for data in samples:
+            filename = f"{uuid.uuid4().hex}.ogg"
+            sample_urls.append(upload_sample(user_id, filename, data))
+
+        pvc_voice_id = elevenlabs_pvc.create_pvc_voice(name, language=user_lang)
+        logger.info("Created PVC voice %s -> %s", name, pvc_voice_id)
+        elevenlabs_pvc.upload_pvc_samples(pvc_voice_id, samples)
+
+        voice_doc_id = await create_voice(
+            user_id, name, pvc_voice_id, sample_urls,
+            kind=VOICE_KIND_PVC, training_status="verifying",
+        )
+        context.user_data["pvc_voice_doc_id"] = voice_doc_id
+        context.user_data["pvc_voice_id"] = pvc_voice_id
+        context.user_data["pvc_captcha_attempts"] = 0
+    except Exception:
+        logger.exception("PVC voice creation/upload failed")
+        await update.message.reply_text(
+            "יצירת הקול נכשלה (ייתכן שהגעת למגבלת הקולות בחשבון ElevenLabs). "
+            "נסה/י שוב או פנה/י לתמיכה."
+        )
+        return ConversationHandler.END
+
+    return await _send_pvc_captcha(update, context)
+
+
+async def _send_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Fetch the captcha audio and prompt the user to record themselves repeating it."""
+    pvc_voice_id = context.user_data.get("pvc_voice_id")
+    try:
+        captcha_audio = elevenlabs_pvc.get_pvc_captcha_audio(pvc_voice_id)
+    except Exception:
+        logger.exception("Failed to fetch PVC captcha")
+        await update.message.reply_text(
+            "לא הצלחתי להוריד את משפט האימות מ-ElevenLabs. נסה/י שוב מאוחר יותר עם /newvoice."
+        )
+        return ConversationHandler.END
+
+    attempts = context.user_data.get("pvc_captcha_attempts", 0)
+    remaining_label = ""
+    if attempts > 0:
+        remaining = PREMIUM_MAX_CAPTCHA_ATTEMPTS - attempts
+        remaining_label = f"\n(נסיון {attempts + 1}/{PREMIUM_MAX_CAPTCHA_ATTEMPTS}, נשארו {remaining})"
+
+    await update.message.reply_voice(
+        voice=captcha_audio,
+        caption=(
+            "שלב אימות זהות (חובה ב-PVC).\n"
+            "האזן/י לקובץ הקול ושלח/י הקלטה שלך **שאומרת בדיוק את אותו המשפט באנגלית**.\n"
+            "שלח/י הקלטה קולית אחת בלבד."
+            + remaining_label
+        ),
+    )
+    return AWAITING_PVC_CAPTCHA
+
+
+async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    samples = context.user_data.get("new_voice_samples", [])
+    if not samples:
+        await update.message.reply_text("לא התקבלו דגימות. שלח/י לפחות הקלטה אחת.")
+        return COLLECTING_SAMPLES
+    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
+    if mode == MODE_PREMIUM:
+        return await _newvoice_done_premium(update, context)
+    return await _newvoice_done_casual(update, context)
+
+
+async def newvoice_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        await update.message.reply_text("שלח/י הקלטה קולית עם משפט האימות, או /cancel.")
+        return AWAITING_PVC_CAPTCHA
+
+    pvc_voice_id = context.user_data.get("pvc_voice_id")
+    voice_doc_id = context.user_data.get("pvc_voice_doc_id")
+    if not pvc_voice_id or not voice_doc_id:
+        await update.message.reply_text("שגיאה במצב האימות. נסה/י שוב עם /newvoice.")
+        return ConversationHandler.END
+
+    file = await context.bot.get_file(voice.file_id)
+    data = bytes(await file.download_as_bytearray())
+
+    await update.message.reply_text("מאמת...")
+    await update.message.reply_chat_action("typing")
+    try:
+        elevenlabs_pvc.submit_pvc_captcha(pvc_voice_id, data)
+    except Exception as e:
+        logger.exception("PVC captcha submit failed")
+        context.user_data["pvc_captcha_attempts"] = context.user_data.get("pvc_captcha_attempts", 0) + 1
+        # Best-effort: see whether ElevenLabs gave us a more specific status
+        try:
+            status = elevenlabs_pvc.get_pvc_status(pvc_voice_id)
+        except Exception:
+            status = {"verification_attempts_count": context.user_data["pvc_captcha_attempts"]}
+        attempts = context.user_data["pvc_captcha_attempts"]
+        if attempts >= PREMIUM_MAX_CAPTCHA_ATTEMPTS:
+            await set_voice_training_status(voice_doc_id, "failed")
+            await mark_voice_notified(voice_doc_id)
+            await update.message.reply_text(
+                "האימות נכשל מספר פעמים. הקול לא ייווצר. "
+                "אפשר לנסות שוב מהתחלה עם /newvoice. (פרטים: " + str(e)[:120] + ")"
+            )
+            return ConversationHandler.END
+        await update.message.reply_text(
+            f"האימות נכשל. נשארו {PREMIUM_MAX_CAPTCHA_ATTEMPTS - attempts} נסיונות.\n"
+            "בקרוב אשלח לך שוב את משפט האימות."
+        )
+        return await _send_pvc_captcha(update, context)
+
+    # Captcha accepted. Kick off training.
+    try:
+        elevenlabs_pvc.start_pvc_training(pvc_voice_id)
+    except Exception:
+        logger.exception("PVC train start failed")
+        await set_voice_training_status(voice_doc_id, "failed")
+        await mark_voice_notified(voice_doc_id)
+        await update.message.reply_text(
+            "האימות הצליח אך לא הצלחנו להתחיל אימון. נסה/י שוב מאוחר יותר עם /newvoice."
+        )
+        return ConversationHandler.END
+
+    await set_voice_training_status(voice_doc_id, "training")
+    await update.message.reply_text(
+        "אומת בהצלחה! האימון החל ויכול לקחת עד 24 שעות.\n"
+        "אעדכן/י אותך כאן ברגע שהקול מוכן. אפשר להמשיך להשתמש בבוט בינתיים."
+    )
+    _clear_newvoice_state(context)
+    return ConversationHandler.END
+
+
+def _clear_newvoice_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for k in (
+        "new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds",
+        "pvc_voice_id", "pvc_voice_doc_id", "pvc_captcha_attempts", "_last_media_group_id",
+    ):
+        context.user_data.pop(k, None)
+
+
 async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
+    # If the user cancels mid-Premium-flow we should also tear down the half-built PVC voice
+    # in ElevenLabs (otherwise it eats a slot forever).
+    pvc_voice_id = context.user_data.get("pvc_voice_id")
+    voice_doc_id = context.user_data.get("pvc_voice_doc_id")
+    if pvc_voice_id:
+        try:
+            elevenlabs_pvc.delete_pvc_voice(pvc_voice_id)
+        except Exception:
+            logger.exception("Failed to cleanup PVC voice %s", pvc_voice_id)
+    if voice_doc_id:
+        try:
+            await delete_voice(voice_doc_id)
+        except Exception:
+            logger.exception("Failed to delete cancelled PVC voice doc %s", voice_doc_id)
+    _clear_newvoice_state(context)
     await update.message.reply_text("יצירת הקול בוטלה.")
     return ConversationHandler.END
 
@@ -643,9 +922,20 @@ async def cmd_dialogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    system_voices = await get_system_voices()
-    custom_voices = await get_user_voices(user_id)
-    all_voices = system_voices + custom_voices
+    mode = await get_user_mode(user_id)
+    if mode == MODE_PREMIUM:
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_PVC)
+        custom_voices = [v for v in custom_voices if v.get("training_status", "ready") == "ready"]
+        all_voices = custom_voices
+        if not all_voices:
+            await update.message.reply_text(
+                "אין לך קולות Premium מוכנים לשיחה. צור/י עם /newvoice קודם."
+            )
+            return ConversationHandler.END
+    else:
+        system_voices = await get_system_voices()
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
+        all_voices = system_voices + custom_voices
 
     context.user_data["dialogue_available"] = all_voices
     context.user_data["dialogue_selected"] = []
@@ -904,6 +1194,12 @@ LANG_OPTIONS = {
 }
 
 
+MODE_LABELS = {
+    MODE_CASUAL: "Casual (מהיר)",
+    MODE_PREMIUM: "Premium (איכותי)",
+}
+
+
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not await is_authorized(user_id):
@@ -911,7 +1207,13 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     settings = await get_user_settings(user_id)
+    mode = await get_user_mode(user_id)
     lang_name = LANG_OPTIONS.get(settings["language"], settings["language"])
+
+    mode_buttons = []
+    for code in (MODE_CASUAL, MODE_PREMIUM):
+        label = f"{'>> ' if mode == code else ''}{MODE_LABELS[code]}"
+        mode_buttons.append(InlineKeyboardButton(label, callback_data=f"set_mode:{code}"))
 
     speed_buttons = []
     for s in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]:
@@ -923,15 +1225,49 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         label = f"{'>> ' if settings['language'] == code else ''}{name}"
         lang_buttons.append(InlineKeyboardButton(label, callback_data=f"set_lang:{code}"))
 
-    buttons = [speed_buttons[:3], speed_buttons[3:], lang_buttons[:3], lang_buttons[3:]]
+    buttons = [mode_buttons, speed_buttons[:3], speed_buttons[3:], lang_buttons[:3], lang_buttons[3:]]
 
     await update.message.reply_text(
         f"הגדרות נוכחיות:\n"
+        f"מצב: {MODE_LABELS.get(mode, mode)}\n"
         f"מהירות: {settings['speed']}x\n"
         f"שפה: {lang_name}\n\n"
+        "Casual = שיבוט מהיר עם ElevenLabs IVC.\n"
+        "Premium = שיבוט מקצועי עם ElevenLabs PVC (דרוש לפחות 30 דק' של דגימות).\n\n"
         "בחר/י להגדיר:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+
+
+async def handle_set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    mode = query.data.replace("set_mode:", "")
+    if mode not in (MODE_CASUAL, MODE_PREMIUM):
+        await query.edit_message_text("מצב לא חוקי.")
+        return
+
+    current_mode = await get_user_mode(user_id)
+    await set_user_mode(user_id, mode)
+
+    # Switching modes invalidates the active voice (it likely belongs to the other tier).
+    if current_mode != mode:
+        active = await get_active_voice_doc(user_id)
+        if active and active.get("kind") != voice_kind_for_mode(mode):
+            await set_active_voice(user_id, None)
+
+    if mode == MODE_PREMIUM:
+        await query.edit_message_text(
+            f"עברת ל-{MODE_LABELS[MODE_PREMIUM]}.\n"
+            "צור/י קול חדש עם /newvoice (דרוש לפחות 30 דק' של דגימות, האימון לוקח עד 24 שעות), "
+            "או בחר/י קול קיים עם /voices."
+        )
+    else:
+        await query.edit_message_text(
+            f"עברת ל-{MODE_LABELS[MODE_CASUAL]}.\n"
+            "השתמש/י ב-/voices לבחירת קול."
+        )
 
 
 async def handle_set_speed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -959,11 +1295,12 @@ async def cmd_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await update.message.reply_text(UNAUTHORIZED_MSG)
         return ConversationHandler.END
 
-    custom_voices = await get_user_voices(user_id)
+    # /enhance only makes sense for IVC voices (PVC clones aren't meant to be remixed).
+    custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
     if not custom_voices:
         await update.message.reply_text(
             "אין לך קולות מותאמים לשיפור.\n"
-            "צור/י קול חדש עם /newvoice קודם."
+            "צור/י קול חדש במצב Casual עם /newvoice קודם."
         )
         return ConversationHandler.END
 
@@ -1157,6 +1494,73 @@ async def cmd_noeffects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("אפקט הרקע הוסר.")
 
 
+# ── PVC training poller ──────────────────────────────────────────────────────
+
+PVC_POLL_INTERVAL_SECONDS = 5 * 60
+
+
+async def poll_pvc_voices(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Refresh status on PVC voices in training, then DM owners about finished ones."""
+    try:
+        in_progress = await find_pvc_voices_in_progress()
+    except Exception:
+        logger.exception("PVC poll: failed to query in-progress voices")
+        in_progress = []
+
+    for v in in_progress:
+        eid = v.get("elevenlabs_voice_id")
+        if not eid:
+            continue
+        try:
+            status = elevenlabs_pvc.get_pvc_status(eid)
+        except Exception:
+            logger.exception("PVC poll: status fetch failed for %s", eid)
+            continue
+        state = status.get("state", "unknown")
+        if state == elevenlabs_pvc.PVC_STATE_FINE_TUNED:
+            await set_voice_training_status(v["id"], "ready")
+            logger.info("PVC voice %s (%s) finished training", v["name"], eid)
+        elif state == elevenlabs_pvc.PVC_STATE_FAILED:
+            await set_voice_training_status(v["id"], "failed")
+            logger.warning("PVC voice %s (%s) failed training", v["name"], eid)
+        elif state in elevenlabs_pvc.PVC_IN_PROGRESS_STATES and v.get("training_status") != "training":
+            # Caught a voice that finished verifying server-side without going through us;
+            # nudge our local status to "training" so the UI badge matches.
+            await set_voice_training_status(v["id"], "training")
+
+    try:
+        finished = await find_unnotified_finished_voices()
+    except Exception:
+        logger.exception("PVC poll: failed to query finished voices")
+        finished = []
+
+    for v in finished:
+        telegram_id = v.get("telegram_id")
+        if not telegram_id:
+            continue
+        try:
+            if v.get("training_status") == "ready":
+                await context.bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        f"הקול הפרימיום \"{v['name']}\" מוכן לשימוש.\n"
+                        "השתמש/י ב-/voices לבחירה."
+                    ),
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        f"האימון של הקול הפרימיום \"{v['name']}\" נכשל.\n"
+                        "אפשר למחוק עם /deletevoice ולנסות שוב עם /newvoice."
+                    ),
+                )
+        except Exception:
+            logger.exception("PVC poll: failed to DM %s about voice %s", telegram_id, v["id"])
+            continue
+        await mark_voice_notified(v["id"])
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def post_init(application) -> None:
@@ -1183,6 +1587,9 @@ def main() -> None:
             COLLECTING_SAMPLES: [
                 MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, newvoice_sample),
                 CommandHandler("done", newvoice_done),
+            ],
+            AWAITING_PVC_CAPTCHA: [
+                MessageHandler(filters.VOICE | filters.AUDIO, newvoice_pvc_captcha),
             ],
         },
         fallbacks=[CommandHandler("cancel", newvoice_cancel)],
@@ -1261,6 +1668,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
     app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CallbackQueryHandler(handle_set_mode, pattern=r"^set_mode:"))
     app.add_handler(CallbackQueryHandler(handle_set_speed, pattern=r"^set_speed:"))
     app.add_handler(CallbackQueryHandler(handle_set_lang, pattern=r"^set_lang:"))
     app.add_handler(CommandHandler("voices", cmd_voices))
@@ -1270,9 +1678,23 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(
+            poll_pvc_voices,
+            interval=PVC_POLL_INTERVAL_SECONDS,
+            first=30,
+            name="poll_pvc_voices",
+        )
+    else:
+        logger.warning(
+            "No JobQueue available; PVC voices will not be auto-polled. "
+            "Install python-telegram-bot[job-queue]."
+        )
+
     print("Bot started")
     print(f"  Text -> TTS ({TTS_MODEL})")
     print(f"  Voice -> STS ({STS_MODEL})")
+    print(f"  PVC poller: every {PVC_POLL_INTERVAL_SECONDS}s")
     print("Ready.")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

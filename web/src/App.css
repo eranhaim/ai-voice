@@ -234,6 +234,36 @@ tr:hover td {
   border: 1px solid #8b5cf644;
 }
 
+.badge-ivc {
+  background: #30363d44;
+  color: #8b949e;
+  border: 1px solid #30363d;
+}
+
+.badge-pvc {
+  background: #d29c2222;
+  color: #e3b341;
+  border: 1px solid #d29c2244;
+}
+
+.badge-ready {
+  background: #23863622;
+  color: #3fb950;
+  border: 1px solid #23863644;
+}
+
+.badge-progress {
+  background: #1f6feb22;
+  color: #58a6ff;
+  border: 1px solid #1f6feb44;
+}
+
+.badge-failed {
+  background: #da363322;
+  color: #f85149;
+  border: 1px solid #da363344;
+}
+
 /* ── Misc ────────────────────────────────────────────── */
 
 .error {

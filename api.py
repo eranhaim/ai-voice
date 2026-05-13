@@ -176,6 +176,8 @@ class VoiceOut(BaseModel):
     telegram_id: int
     name: str
     elevenlabs_voice_id: str
+    kind: str
+    training_status: str
     created_at: str
 
 
@@ -197,6 +199,8 @@ async def list_voices(
             telegram_id=doc["telegram_id"],
             name=doc["name"],
             elevenlabs_voice_id=doc.get("elevenlabs_voice_id", ""),
+            kind=doc.get("kind", "ivc"),
+            training_status=doc.get("training_status", "ready"),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
         ))
     return voices

@@ -119,6 +119,8 @@ export default function Voices() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Tier</th>
+              <th>Status</th>
               <th>Telegram ID</th>
               <th>ElevenLabs Voice ID</th>
               <th>Created</th>
@@ -128,6 +130,8 @@ export default function Voices() {
             {customVoices.map((v, i) => (
               <tr key={i}>
                 <td>{v.name}</td>
+                <td><KindBadge kind={v.kind} /></td>
+                <td><StatusBadge status={v.training_status} /></td>
                 <td>{v.telegram_id}</td>
                 <td className="text-cell">{v.elevenlabs_voice_id}</td>
                 <td className="nowrap">{formatDate(v.created_at)}</td>
@@ -138,4 +142,22 @@ export default function Voices() {
       )}
     </div>
   );
+}
+
+function KindBadge({ kind }) {
+  const label = kind === "pvc" ? "PVC" : "IVC";
+  const cls = kind === "pvc" ? "badge badge-pvc" : "badge badge-ivc";
+  return <span className={cls}>{label}</span>;
+}
+
+function StatusBadge({ status }) {
+  const map = {
+    ready: { label: "Ready", cls: "badge badge-ready" },
+    uploading: { label: "Uploading", cls: "badge badge-progress" },
+    verifying: { label: "Verifying", cls: "badge badge-progress" },
+    training: { label: "Training", cls: "badge badge-progress" },
+    failed: { label: "Failed", cls: "badge badge-failed" },
+  };
+  const entry = map[status] || { label: status || "ready", cls: "badge badge-ready" };
+  return <span className={entry.cls}>{entry.label}</span>;
 }
