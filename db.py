@@ -30,6 +30,27 @@ def voice_kind_for_mode(mode: str) -> str:
     return VOICE_KIND_PVC if mode == MODE_PREMIUM else VOICE_KIND_IVC
 
 
+# Per-voice settings the user can tune from the bot. Defaults match the values
+# the bot used before this feature shipped, so behaviour for un-tuned voices
+# is unchanged. STS historically used stability=0.5 (vs TTS 0.6); we keep that
+# modality difference baked into the defaults, but any user override applies
+# to both TTS and STS.
+TTS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
+    "stability": 0.6,
+    "similarity_boost": 0.95,
+    "style": 0.3,
+}
+STS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
+    "stability": 0.5,
+    "similarity_boost": 0.95,
+    "style": 0.3,
+}
+VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style")
+VOICE_SETTING_MIN = 0.0
+VOICE_SETTING_MAX = 1.0
+VOICE_SETTING_STEP = 0.05
+
+
 def get_db():
     global _client
     if _client is None:
@@ -84,6 +105,57 @@ async def set_user_mode(telegram_id: int, mode: str) -> None:
     await db.users.update_one(
         {"telegram_id": telegram_id},
         {"$set": {"mode": mode}},
+    )
+
+
+# ── Per-voice settings (per user, per voice) ─────────────────────────────────
+
+async def get_voice_settings_overrides(telegram_id: int, voice_doc_id: str) -> dict[str, float]:
+    """Return any per-voice setting overrides the user has set, or {}."""
+    db = get_db()
+    user = await db.users.find_one(
+        {"telegram_id": telegram_id},
+        {"voice_settings": 1},
+    )
+    if not user:
+        return {}
+    overrides = (user.get("voice_settings") or {}).get(voice_doc_id) or {}
+    return {k: float(v) for k, v in overrides.items() if k in VOICE_SETTING_KEYS}
+
+
+async def get_voice_settings(
+    telegram_id: int,
+    voice_doc_id: str,
+    modality: str = "tts",
+) -> dict[str, float]:
+    """Defaults for the modality, with the user's overrides layered on top."""
+    base = STS_VOICE_SETTINGS_DEFAULTS if modality == "sts" else TTS_VOICE_SETTINGS_DEFAULTS
+    overrides = await get_voice_settings_overrides(telegram_id, voice_doc_id)
+    return {**base, **overrides}
+
+
+async def set_voice_setting(
+    telegram_id: int,
+    voice_doc_id: str,
+    key: str,
+    value: float,
+) -> None:
+    if key not in VOICE_SETTING_KEYS:
+        raise ValueError(f"invalid voice setting key: {key}")
+    clamped = max(VOICE_SETTING_MIN, min(VOICE_SETTING_MAX, float(value)))
+    clamped = round(clamped, 4)
+    db = get_db()
+    await db.users.update_one(
+        {"telegram_id": telegram_id},
+        {"$set": {f"voice_settings.{voice_doc_id}.{key}": clamped}},
+    )
+
+
+async def reset_voice_settings(telegram_id: int, voice_doc_id: str) -> None:
+    db = get_db()
+    await db.users.update_one(
+        {"telegram_id": telegram_id},
+        {"$unset": {f"voice_settings.{voice_doc_id}": ""}},
     )
 
 

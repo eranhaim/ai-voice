@@ -1,5 +1,6 @@
-import os
+import json
 import logging
+import os
 import subprocess
 import uuid
 from io import BytesIO
@@ -44,10 +45,20 @@ from db import (
     mark_voice_notified,
     get_system_voices,
     seed_system_voices,
+    get_voice_settings,
+    get_voice_settings_overrides,
+    set_voice_setting,
+    reset_voice_settings,
     MODE_CASUAL,
     MODE_PREMIUM,
     VOICE_KIND_IVC,
     VOICE_KIND_PVC,
+    TTS_VOICE_SETTINGS_DEFAULTS,
+    STS_VOICE_SETTINGS_DEFAULTS,
+    VOICE_SETTING_KEYS,
+    VOICE_SETTING_MIN,
+    VOICE_SETTING_MAX,
+    VOICE_SETTING_STEP,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
 import elevenlabs_pvc
@@ -102,18 +113,26 @@ def _ensure_brackets(tag: str) -> str:
     return tag
 
 
-def text_to_speech(text: str, voice_id: str, audio_tag: str = "", speed: float = 1.0, language: str = "he") -> bytes:
+def text_to_speech(
+    text: str,
+    voice_id: str,
+    audio_tag: str = "",
+    speed: float = 1.0,
+    language: str = "he",
+    voice_settings: dict | None = None,
+) -> bytes:
     client = _get_elevenlabs()
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
-    voice_settings = {"stability": 0.6, "similarity_boost": 0.95, "style": 0.3, "speed": speed}
+    settings = dict(voice_settings or TTS_VOICE_SETTINGS_DEFAULTS)
+    settings["speed"] = speed
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
         output_format="mp3_44100_128",
         language_code=language,
-        voice_settings=voice_settings,
+        voice_settings=settings,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -121,14 +140,20 @@ def text_to_speech(text: str, voice_id: str, audio_tag: str = "", speed: float =
     return buffer.getvalue()
 
 
-def speech_to_speech(audio_bytes: bytes, voice_id: str) -> bytes:
+def speech_to_speech(
+    audio_bytes: bytes,
+    voice_id: str,
+    voice_settings: dict | None = None,
+) -> bytes:
     client = _get_elevenlabs()
+    settings = dict(voice_settings or STS_VOICE_SETTINGS_DEFAULTS)
+    # STS endpoint takes voice_settings as a JSON string in the multipart form.
     audio_iter = client.speech_to_speech.convert(
         voice_id=voice_id,
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings='{"stability": 0.5, "similarity_boost": 0.95, "style": 0.3}',
+        voice_settings=json.dumps(settings),
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -333,8 +358,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("הטקסט ארוך מדי. מקסימום 5,000 תווים.")
         return
 
-    voice_id = await get_user_voice_id(user_id)
-    vname = await get_voice_name(user_id)
+    active = await get_active_voice_doc(user_id)
+    voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
+    vname = active["name"] if active else await get_voice_name(user_id)
+    voice_settings_override = (
+        await get_voice_settings(user_id, active["id"], modality="tts") if active else None
+    )
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     effect = await get_user_effect(user_id)
     settings = await get_user_settings(user_id)
@@ -342,10 +371,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_chat_action("record_voice")
 
     try:
-        audio_data = text_to_speech(text, voice_id, audio_tag, settings["speed"], settings["language"])
+        audio_data = text_to_speech(
+            text, voice_id, audio_tag, settings["speed"], settings["language"],
+            voice_settings=voice_settings_override,
+        )
         if not audio_data:
             logger.warning("TTS returned empty audio, retrying without audio tag")
-            audio_data = text_to_speech(text, voice_id, speed=settings["speed"], language=settings["language"])
+            audio_data = text_to_speech(
+                text, voice_id, speed=settings["speed"], language=settings["language"],
+                voice_settings=voice_settings_override,
+            )
         if not audio_data:
             await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
             return
@@ -368,8 +403,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not voice:
         return
 
-    voice_id = await get_user_voice_id(user_id)
-    vname = await get_voice_name(user_id)
+    active = await get_active_voice_doc(user_id)
+    voice_id = active["elevenlabs_voice_id"] if active else await get_user_voice_id(user_id)
+    vname = active["name"] if active else await get_voice_name(user_id)
+    voice_settings_override = (
+        await get_voice_settings(user_id, active["id"], modality="sts") if active else None
+    )
     effect = await get_user_effect(user_id)
     logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
@@ -393,7 +432,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("Transcription failed, continuing with voice conversion")
 
-        converted = speech_to_speech(audio_bytes, voice_id)
+        converted = speech_to_speech(audio_bytes, voice_id, voice_settings=voice_settings_override)
         ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
@@ -437,26 +476,35 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             if status == "ready":
                 is_active = v["elevenlabs_voice_id"] == current_voice_id
                 label = (">> " if is_active else "") + v["name"]
-                buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
+                buttons.append([
+                    InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}"),
+                    InlineKeyboardButton("🎛", callback_data=f"voice_tune:{v['id']}"),
+                ])
             else:
                 badge = _TRAINING_STATUS_BADGE.get(status, f"({status})")
                 buttons.append([InlineKeyboardButton(
                     f"{v['name']} {badge}",
                     callback_data="voice_select:disabled",
                 )])
-        header = "קולות Premium שלך:\n(>> מסמן את הנוכחי)"
+        header = "קולות Premium שלך:\n(>> מסמן את הנוכחי, 🎛 לכוונון)"
     else:
         system_voices = await get_system_voices()
         custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
         for sv in system_voices:
             is_active = sv["elevenlabs_voice_id"] == current_voice_id
             label = (">> " if is_active else "") + sv["name"]
-            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
+            buttons.append([
+                InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}"),
+                InlineKeyboardButton("🎛", callback_data=f"voice_tune:{sv['id']}"),
+            ])
         for v in custom_voices:
             is_active = v["elevenlabs_voice_id"] == current_voice_id
             label = (">> " if is_active else "") + v["name"]
-            buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
-        header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)"
+            buttons.append([
+                InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}"),
+                InlineKeyboardButton("🎛", callback_data=f"voice_tune:{v['id']}"),
+            ])
+        header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי, 🎛 לכוונון)"
 
     await update.message.reply_text(
         header,
@@ -484,6 +532,105 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await set_active_voice(user_id, data)
     await query.edit_message_text(f"עברת לקול: {voice['name']}")
+
+
+# ── Per-voice tuning (stability / similarity / style) ────────────────────────
+
+VOICE_TUNE_LABELS_HE = {
+    "stability": "יציבות",
+    "similarity_boost": "דמיון לקול",
+    "style": "סגנון",
+}
+
+
+def _build_tune_message_and_keyboard(
+    voice_name: str,
+    voice_doc_id: str,
+    values: dict[str, float],
+    overrides: dict[str, float],
+) -> tuple[str, InlineKeyboardMarkup]:
+    lines = [f"כיוונון של \"{voice_name}\":"]
+    for key in VOICE_SETTING_KEYS:
+        label_he = VOICE_TUNE_LABELS_HE[key]
+        suffix = "" if key in overrides else "  (ברירת מחדל)"
+        lines.append(f"• {label_he}: {values[key]:.2f}{suffix}")
+    lines.append("")
+    lines.append("כל לחיצה מזיזה ב-0.05.")
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for key in VOICE_SETTING_KEYS:
+        label_he = VOICE_TUNE_LABELS_HE[key]
+        rows.append([
+            InlineKeyboardButton(f"{label_he} −", callback_data=f"voice_tune_set:{voice_doc_id}:{key}:dec"),
+            InlineKeyboardButton(f"{values[key]:.2f}", callback_data="voice_tune_noop"),
+            InlineKeyboardButton(f"{label_he} +", callback_data=f"voice_tune_set:{voice_doc_id}:{key}:inc"),
+        ])
+    rows.append([
+        InlineKeyboardButton("איפוס לברירת מחדל", callback_data=f"voice_tune_reset:{voice_doc_id}"),
+        InlineKeyboardButton("סגירה", callback_data="voice_tune_close"),
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _render_voice_tune(query, user_id: int, voice_doc_id: str) -> None:
+    voice = await get_voice_by_id(voice_doc_id)
+    if not voice:
+        await query.edit_message_text("הקול לא נמצא.")
+        return
+    overrides = await get_voice_settings_overrides(user_id, voice_doc_id)
+    # Display value uses TTS defaults as the "base" view (stability=0.6); STS just has
+    # a slightly different stability default but the same per-voice override applies.
+    values = {**TTS_VOICE_SETTINGS_DEFAULTS, **overrides}
+    text, kb = _build_tune_message_and_keyboard(voice["name"], voice_doc_id, values, overrides)
+    await query.edit_message_text(text, reply_markup=kb)
+
+
+async def handle_voice_tune(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Entry point: tapping the 🎛 button on a voice row."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    voice_doc_id = query.data.replace("voice_tune:", "")
+    await _render_voice_tune(query, user_id, voice_doc_id)
+
+
+async def handle_voice_tune_set(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Increment or decrement one of the per-voice settings."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    try:
+        _, voice_doc_id, key, direction = query.data.split(":", 3)
+    except ValueError:
+        return
+    if key not in VOICE_SETTING_KEYS:
+        return
+
+    overrides = await get_voice_settings_overrides(user_id, voice_doc_id)
+    current = overrides.get(key, TTS_VOICE_SETTINGS_DEFAULTS[key])
+    delta = VOICE_SETTING_STEP if direction == "inc" else -VOICE_SETTING_STEP
+    new_value = round(max(VOICE_SETTING_MIN, min(VOICE_SETTING_MAX, current + delta)), 4)
+    await set_voice_setting(user_id, voice_doc_id, key, new_value)
+    await _render_voice_tune(query, user_id, voice_doc_id)
+
+
+async def handle_voice_tune_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer("שוחזר לברירת מחדל")
+    user_id = query.from_user.id
+    voice_doc_id = query.data.replace("voice_tune_reset:", "")
+    await reset_voice_settings(user_id, voice_doc_id)
+    await _render_voice_tune(query, user_id, voice_doc_id)
+
+
+async def handle_voice_tune_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("כוונון נשמר.")
+
+
+async def handle_voice_tune_noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.callback_query.answer()
 
 
 # ── /deletevoice — remove a custom voice ─────────────────────────────────────
@@ -1088,8 +1235,10 @@ async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT
     try:
         converted_clips = []
         for turn in turns:
-            voice_id = voices[turn["voice_idx"]]["elevenlabs_voice_id"]
-            converted = speech_to_speech(turn["audio"], voice_id)
+            picked = voices[turn["voice_idx"]]
+            voice_id = picked["elevenlabs_voice_id"]
+            override = await get_voice_settings(user_id, picked["id"], modality="sts")
+            converted = speech_to_speech(turn["audio"], voice_id, voice_settings=override)
             converted_clips.append(converted)
 
         stitched = stitch_audio_clips(converted_clips)
@@ -1675,6 +1824,11 @@ def main() -> None:
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
     app.add_handler(CallbackQueryHandler(handle_voice_delete, pattern=r"^voice_delete:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune, pattern=r"^voice_tune:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune_set, pattern=r"^voice_tune_set:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune_reset, pattern=r"^voice_tune_reset:"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune_close, pattern=r"^voice_tune_close$"))
+    app.add_handler(CallbackQueryHandler(handle_voice_tune_noop, pattern=r"^voice_tune_noop$"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
