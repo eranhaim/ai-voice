@@ -546,7 +546,7 @@ async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if mode == MODE_PREMIUM:
         await update.message.reply_text(
-            "יצירת קול Premium (ElevenLabs PVC).\n"
+            "יצירת קול Premium.\n"
             f"דרוש לפחות {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות של הקלטות נקיות.\n"
             "האימון לוקח עד 24 שעות. אעדכן/י אותך כשהקול מוכן.\n\n"
             "איזה שם לתת לקול?"
@@ -704,7 +704,7 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         f"יוצר את הקול הפרימיום \"{name}\" מ-{len(samples)} דגימות "
         f"({total // 60}:{total % 60:02d}).\n"
-        "מעלה ל-ElevenLabs..."
+        "מעלה את הדגימות..."
     )
     await update.message.reply_chat_action("typing")
 
@@ -730,7 +730,7 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("PVC voice creation/upload failed")
         await update.message.reply_text(
-            "יצירת הקול נכשלה (ייתכן שהגעת למגבלת הקולות בחשבון ElevenLabs). "
+            "יצירת הקול נכשלה (ייתכן שהגעת למגבלת הקולות בחשבון). "
             "נסה/י שוב או פנה/י לתמיכה."
         )
         return ConversationHandler.END
@@ -746,7 +746,7 @@ async def _send_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception:
         logger.exception("Failed to fetch PVC captcha")
         await update.message.reply_text(
-            "לא הצלחתי להוריד את משפט האימות מ-ElevenLabs. נסה/י שוב מאוחר יותר עם /newvoice."
+            "לא הצלחתי להוריד את משפט האימות. נסה/י שוב מאוחר יותר עם /newvoice."
         )
         return ConversationHandler.END
 
@@ -1232,8 +1232,8 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"מצב: {MODE_LABELS.get(mode, mode)}\n"
         f"מהירות: {settings['speed']}x\n"
         f"שפה: {lang_name}\n\n"
-        "Casual = שיבוט מהיר עם ElevenLabs IVC.\n"
-        "Premium = שיבוט מקצועי עם ElevenLabs PVC (דרוש לפחות 30 דק' של דגימות).\n\n"
+        "Casual = שיבוט מהיר וזמין מיד.\n"
+        "Premium = שיבוט מקצועי באיכות גבוהה (דרוש לפחות 30 דק' של דגימות, האימון לוקח עד 24 שעות).\n\n"
         "בחר/י להגדיר:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
