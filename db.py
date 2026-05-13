@@ -108,6 +108,65 @@ async def set_user_mode(telegram_id: int, mode: str) -> None:
     )
 
 
+# ── Pitch match (STS source-to-target pitch normalization) ────────────────────
+
+# Default ON: this is the highest-ROI improvement for cross-gender STS and
+# is a no-op for same-gender voices (the delta falls under our noise threshold).
+PITCH_MATCH_DEFAULT = True
+
+
+async def get_user_pitch_match(telegram_id: int) -> bool:
+    db = get_db()
+    user = await db.users.find_one(
+        {"telegram_id": telegram_id},
+        {"pitch_match": 1},
+    )
+    if not user or "pitch_match" not in user:
+        return PITCH_MATCH_DEFAULT
+    return bool(user["pitch_match"])
+
+
+async def set_user_pitch_match(telegram_id: int, enabled: bool) -> None:
+    db = get_db()
+    await db.users.update_one(
+        {"telegram_id": telegram_id},
+        {"$set": {"pitch_match": bool(enabled)}},
+    )
+
+
+async def get_voice_target_pitch_hz(elevenlabs_voice_id: str) -> float | None:
+    """Cached target-voice average F0, looked up across both voice collections."""
+    db = get_db()
+    doc = await db.system_voices.find_one(
+        {"elevenlabs_voice_id": elevenlabs_voice_id},
+        {"target_pitch_hz": 1},
+    )
+    if doc and doc.get("target_pitch_hz"):
+        return float(doc["target_pitch_hz"])
+    doc = await db.voices.find_one(
+        {"elevenlabs_voice_id": elevenlabs_voice_id},
+        {"target_pitch_hz": 1},
+    )
+    if doc and doc.get("target_pitch_hz"):
+        return float(doc["target_pitch_hz"])
+    return None
+
+
+async def set_voice_target_pitch_hz(elevenlabs_voice_id: str, hz: float) -> None:
+    """Cache a freshly-computed target F0 onto whichever voice doc owns this id."""
+    db = get_db()
+    result = await db.system_voices.update_one(
+        {"elevenlabs_voice_id": elevenlabs_voice_id},
+        {"$set": {"target_pitch_hz": float(hz)}},
+    )
+    if result.matched_count:
+        return
+    await db.voices.update_one(
+        {"elevenlabs_voice_id": elevenlabs_voice_id},
+        {"$set": {"target_pitch_hz": float(hz)}},
+    )
+
+
 # ── Per-voice settings (per user, per voice) ─────────────────────────────────
 
 async def get_voice_settings_overrides(telegram_id: int, voice_doc_id: str) -> dict[str, float]:

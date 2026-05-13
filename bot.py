@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,6 +6,7 @@ import subprocess
 import uuid
 from io import BytesIO
 
+import httpx
 from openai import OpenAI
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
@@ -49,6 +51,10 @@ from db import (
     get_voice_settings_overrides,
     set_voice_setting,
     reset_voice_settings,
+    get_user_pitch_match,
+    set_user_pitch_match,
+    get_voice_target_pitch_hz,
+    set_voice_target_pitch_hz,
     MODE_CASUAL,
     MODE_PREMIUM,
     VOICE_KIND_IVC,
@@ -62,6 +68,7 @@ from db import (
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
 import elevenlabs_pvc
+import pitch
 
 load_dotenv()
 
@@ -318,6 +325,96 @@ def process_audio_with_effect(voice_bytes: bytes, effect_description: str | None
         return mp3_to_ogg_opus(voice_bytes)
 
 
+# ── Pitch matching (STS source → target F0 normalization) ────────────────────
+
+def _fetch_voice_preview_audio(elevenlabs_voice_id: str) -> bytes | None:
+    """Return MP3 bytes of the ElevenLabs preview clip for a voice.
+
+    Used to estimate the target voice's average F0 once and cache the result.
+    Works for system voices, IVC, and PVC alike -- ElevenLabs always exposes
+    a `preview_url` for fully-trained voices.
+    """
+    try:
+        voice = _get_elevenlabs().voices.get(voice_id=elevenlabs_voice_id)
+    except Exception:
+        logger.exception("Failed to fetch voice metadata for %s", elevenlabs_voice_id)
+        return None
+    preview_url = getattr(voice, "preview_url", None)
+    if not preview_url:
+        logger.info("Voice %s has no preview_url; cannot detect target pitch", elevenlabs_voice_id)
+        return None
+    try:
+        resp = httpx.get(preview_url, timeout=15.0)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        logger.exception("Failed to fetch preview audio for %s", elevenlabs_voice_id)
+        return None
+
+
+async def _resolve_target_pitch_hz(elevenlabs_voice_id: str) -> float | None:
+    """Cached lookup; lazily computes and persists target F0 on first STS call."""
+    cached = await get_voice_target_pitch_hz(elevenlabs_voice_id)
+    if cached:
+        return cached
+
+    preview = await asyncio.to_thread(_fetch_voice_preview_audio, elevenlabs_voice_id)
+    if not preview:
+        return None
+
+    target_hz = await asyncio.to_thread(pitch.estimate_f0_hz, preview)
+    if not target_hz:
+        return None
+
+    try:
+        await set_voice_target_pitch_hz(elevenlabs_voice_id, target_hz)
+    except Exception:
+        logger.exception("Failed to cache target pitch for %s", elevenlabs_voice_id)
+    return target_hz
+
+
+async def maybe_pitch_match(
+    user_id: int,
+    audio_bytes: bytes,
+    target_elevenlabs_voice_id: str,
+) -> bytes:
+    """Apply source→target pitch shifting to `audio_bytes` if the user has it
+    enabled and the source/target pitches differ enough to bother.
+
+    Returns the (possibly shifted) audio bytes. Any failure path returns the
+    original audio so STS still works.
+    """
+    try:
+        if not await get_user_pitch_match(user_id):
+            return audio_bytes
+
+        target_hz = await _resolve_target_pitch_hz(target_elevenlabs_voice_id)
+        if not target_hz:
+            return audio_bytes
+
+        source_hz = await asyncio.to_thread(pitch.estimate_f0_hz, audio_bytes)
+        if not source_hz:
+            return audio_bytes
+
+        shift = pitch.compute_shift_semitones(source_hz, target_hz)
+        if shift == 0.0:
+            logger.info(
+                "Pitch match skipped: src=%.1fHz tgt=%.1fHz (below threshold)",
+                source_hz, target_hz,
+            )
+            return audio_bytes
+
+        logger.info(
+            "Pitch match: src=%.1fHz tgt=%.1fHz shift=%+.2f semitones",
+            source_hz, target_hz, shift,
+        )
+        shifted = await asyncio.to_thread(pitch.pitch_shift_ogg, audio_bytes, shift)
+        return shifted
+    except Exception:
+        logger.exception("Pitch match failed; using original audio")
+        return audio_bytes
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -432,7 +529,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("Transcription failed, continuing with voice conversion")
 
-        converted = speech_to_speech(audio_bytes, voice_id, voice_settings=voice_settings_override)
+        sts_input = await maybe_pitch_match(user_id, audio_bytes, voice_id)
+        converted = speech_to_speech(sts_input, voice_id, voice_settings=voice_settings_override)
         ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
@@ -1238,7 +1336,8 @@ async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT
             picked = voices[turn["voice_idx"]]
             voice_id = picked["elevenlabs_voice_id"]
             override = await get_voice_settings(user_id, picked["id"], modality="sts")
-            converted = speech_to_speech(turn["audio"], voice_id, voice_settings=override)
+            sts_input = await maybe_pitch_match(user_id, turn["audio"], voice_id)
+            converted = speech_to_speech(sts_input, voice_id, voice_settings=override)
             converted_clips.append(converted)
 
         stitched = stitch_audio_clips(converted_clips)
@@ -1357,12 +1456,24 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     settings = await get_user_settings(user_id)
     mode = await get_user_mode(user_id)
+    pitch_match_on = await get_user_pitch_match(user_id)
     lang_name = LANG_OPTIONS.get(settings["language"], settings["language"])
 
     mode_buttons = []
     for code in (MODE_CASUAL, MODE_PREMIUM):
         label = f"{'>> ' if mode == code else ''}{MODE_LABELS[code]}"
         mode_buttons.append(InlineKeyboardButton(label, callback_data=f"set_mode:{code}"))
+
+    pitch_buttons = [
+        InlineKeyboardButton(
+            f"{'>> ' if pitch_match_on else ''}התאמת גובה: פעיל",
+            callback_data="set_pitch:on",
+        ),
+        InlineKeyboardButton(
+            f"{'>> ' if not pitch_match_on else ''}התאמת גובה: כבוי",
+            callback_data="set_pitch:off",
+        ),
+    ]
 
     speed_buttons = []
     for s in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]:
@@ -1374,15 +1485,23 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         label = f"{'>> ' if settings['language'] == code else ''}{name}"
         lang_buttons.append(InlineKeyboardButton(label, callback_data=f"set_lang:{code}"))
 
-    buttons = [mode_buttons, speed_buttons[:3], speed_buttons[3:], lang_buttons[:3], lang_buttons[3:]]
+    buttons = [
+        mode_buttons,
+        pitch_buttons,
+        speed_buttons[:3], speed_buttons[3:],
+        lang_buttons[:3], lang_buttons[3:],
+    ]
 
+    pitch_label = "פעיל" if pitch_match_on else "כבוי"
     await update.message.reply_text(
         f"הגדרות נוכחיות:\n"
         f"מצב: {MODE_LABELS.get(mode, mode)}\n"
+        f"התאמת גובה (STS): {pitch_label}\n"
         f"מהירות: {settings['speed']}x\n"
         f"שפה: {lang_name}\n\n"
         "Casual = שיבוט מהיר וזמין מיד.\n"
-        "Premium = שיבוט מקצועי באיכות גבוהה (דרוש לפחות 30 דק' של דגימות, האימון לוקח עד 24 שעות).\n\n"
+        "Premium = שיבוט מקצועי באיכות גבוהה (דרוש לפחות 30 דק' של דגימות, האימון לוקח עד 24 שעות).\n"
+        "התאמת גובה = משווה את גובה הקול שלך לקול היעד לפני המרה (חשוב במיוחד כשממירים בין גבר לאישה).\n\n"
         "בחר/י להגדיר:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -1434,6 +1553,24 @@ async def handle_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lang_name = LANG_OPTIONS.get(lang, lang)
     await set_user_settings(query.from_user.id, language=lang)
     await query.edit_message_text(f"השפה הוגדרה ל-{lang_name}")
+
+
+async def handle_set_pitch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    value = query.data.replace("set_pitch:", "")
+    enabled = value == "on"
+    await set_user_pitch_match(query.from_user.id, enabled)
+    if enabled:
+        await query.edit_message_text(
+            "התאמת גובה הופעלה.\n"
+            "בהמרת הקלטה (STS), הקלט שלך יוסט אוטומטית לגובה ממוצע של קול היעד "
+            "כדי שהתוצאה תישמע טבעית יותר. פעולה זו מתבצעת רק אם ההפרש משמעותי."
+        )
+    else:
+        await query.edit_message_text(
+            "התאמת גובה כובתה. הקלטות יישלחו ל-STS כפי שהן."
+        )
 
 
 # ── /enhance — remix a voice with a prompt ────────────────────────────────────
@@ -1820,6 +1957,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_set_mode, pattern=r"^set_mode:"))
     app.add_handler(CallbackQueryHandler(handle_set_speed, pattern=r"^set_speed:"))
     app.add_handler(CallbackQueryHandler(handle_set_lang, pattern=r"^set_lang:"))
+    app.add_handler(CallbackQueryHandler(handle_set_pitch, pattern=r"^set_pitch:"))
     app.add_handler(CommandHandler("voices", cmd_voices))
     app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
     app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
