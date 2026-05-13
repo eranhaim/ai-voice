@@ -1,18 +1,16 @@
 import os
 import logging
 import subprocess
-import uuid
 from io import BytesIO
 
 from openai import OpenAI
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     ConversationHandler,
     filters,
     ContextTypes,
@@ -21,20 +19,13 @@ from telegram.ext import (
 from db import (
     is_authorized,
     log_run,
-    get_user_voice_id,
     get_user_prompt,
     set_user_prompt,
     get_user_effect,
     set_user_effect,
-    set_active_voice,
-    create_voice,
-    get_user_voices,
-    get_voice_by_id,
-    delete_voice,
-    get_system_voices,
     seed_system_voices,
+    DEFAULT_VOICE_ID,
 )
-from s3 import upload_sample, delete_samples
 
 load_dotenv()
 
@@ -51,13 +42,11 @@ TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
 DEFAULT_AUDIO_TAG = "[flirty, speaking to a man]"
-MIN_SAMPLE_DURATION = 5
 
 WAITING_PROMPT = 10
+WAITING_EFFECT = 11
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
-
-WAITING_NAME, COLLECTING_SAMPLES = range(2)
 
 
 def _get_elevenlabs() -> ElevenLabs:
@@ -121,29 +110,6 @@ def transcribe(audio_bytes: bytes) -> str:
         language="he",
     )
     return result.text
-
-
-def clone_voice(name: str, audio_files: list[bytes]) -> str:
-    client = _get_elevenlabs()
-    files = []
-    for i, data in enumerate(audio_files):
-        buf = BytesIO(data)
-        buf.name = f"sample_{i}.ogg"
-        files.append(buf)
-    voice = client.voices.ivc.create(
-        name=name,
-        files=files,
-        remove_background_noise=True,
-    )
-    return voice.voice_id
-
-
-def delete_elevenlabs_voice(voice_id: str) -> None:
-    client = _get_elevenlabs()
-    try:
-        client.voices.delete(voice_id=voice_id)
-    except Exception:
-        logger.exception("Failed to delete voice %s from ElevenLabs", voice_id)
 
 
 def generate_sound_effect(description: str, duration: float = 10.0) -> bytes:
@@ -217,9 +183,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "━━━━━━━━━━\n\n"
         "שלח/י טקסט או הודעה קולית ואני אמיר אותם.\n\n"
         "פקודות:\n"
-        "/voices — בחירת קול פעיל\n"
-        "/newvoice — יצירת קול חדש מהקלטות\n"
-        "/deletevoice — מחיקת קול מותאם\n"
         "/prompt — הגדרת סגנון הדיבור\n"
         "/effects — הוספת אפקט קולי ברקע\n"
         "/noeffects — הסרת אפקט הרקע\n"
@@ -242,7 +205,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("הטקסט ארוך מדי. מקסימום 5,000 תווים.")
         return
 
-    voice_id = await get_user_voice_id(user_id)
+    voice_id = DEFAULT_VOICE_ID
     audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     effect = await get_user_effect(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
@@ -275,7 +238,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not voice:
         return
 
-    voice_id = await get_user_voice_id(user_id)
+    voice_id = DEFAULT_VOICE_ID
     effect = await get_user_effect(user_id)
     logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
@@ -301,194 +264,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception:
         logger.exception("STS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
-
-
-# ── /voices — select active voice ────────────────────────────────────────────
-
-async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if not await is_authorized(user_id):
-        await update.message.reply_text(UNAUTHORIZED_MSG)
-        return
-
-    current_voice_id = await get_user_voice_id(user_id)
-    system_voices = await get_system_voices()
-    custom_voices = await get_user_voices(user_id)
-
-    buttons = []
-    for sv in system_voices:
-        is_active = sv["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + sv["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}")])
-
-    for v in custom_voices:
-        is_active = v["elevenlabs_voice_id"] == current_voice_id
-        label = (">> " if is_active else "") + v["name"]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}")])
-
-    await update.message.reply_text(
-        "בחר/י קול פעיל:\n(>> מסמן את הנוכחי)",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-
-
-async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    data = query.data.replace("voice_select:", "")
-
-    voice = await get_voice_by_id(data)
-    if not voice:
-        await query.edit_message_text("הקול לא נמצא.")
-        return
-    await set_active_voice(user_id, data)
-    await query.edit_message_text(f"עברת לקול: {voice['name']}")
-
-
-# ── /deletevoice — remove a custom voice ─────────────────────────────────────
-
-async def cmd_deletevoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if not await is_authorized(user_id):
-        await update.message.reply_text(UNAUTHORIZED_MSG)
-        return
-
-    voices = await get_user_voices(user_id)
-    if not voices:
-        await update.message.reply_text("אין לך קולות מותאמים.")
-        return
-
-    buttons = []
-    for v in voices:
-        buttons.append([InlineKeyboardButton(f"מחק: {v['name']}", callback_data=f"voice_delete:{v['id']}")])
-
-    await update.message.reply_text(
-        "איזה קול למחוק?",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-
-
-async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    voice_doc_id = query.data.replace("voice_delete:", "")
-    deleted = await delete_voice(voice_doc_id)
-
-    if not deleted:
-        await query.edit_message_text("הקול לא נמצא.")
-        return
-
-    delete_elevenlabs_voice(deleted["elevenlabs_voice_id"])
-    try:
-        delete_samples(deleted["sample_urls"])
-    except Exception:
-        logger.exception("Failed to delete S3 samples")
-
-    await query.edit_message_text("הקול נמחק.")
-
-
-# ── /newvoice — create a cloned voice ────────────────────────────────────────
-
-async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    if not await is_authorized(user_id):
-        await update.message.reply_text(UNAUTHORIZED_MSG)
-        return ConversationHandler.END
-
-    await update.message.reply_text("איזה שם לתת לקול החדש?")
-    return WAITING_NAME
-
-
-async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
-    if not name:
-        await update.message.reply_text("שלח/י שם.")
-        return WAITING_NAME
-
-    context.user_data["new_voice_name"] = name
-    context.user_data["new_voice_samples"] = []
-
-    await update.message.reply_text(
-        f"שם הקול: {name}\n\n"
-        "עכשיו שלח/י הקלטות קוליות של האדם הזה.\n"
-        f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
-        "שלח/י /done בסיום, או /cancel לביטול."
-    )
-    return COLLECTING_SAMPLES
-
-
-async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    voice = update.message.voice or update.message.audio
-    if not voice:
-        await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
-        return COLLECTING_SAMPLES
-
-    if voice.duration and voice.duration < MIN_SAMPLE_DURATION:
-        await update.message.reply_text(
-            f"ההקלטה קצרה מדי ({voice.duration} שניות). "
-            f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות."
-        )
-        return COLLECTING_SAMPLES
-
-    samples = context.user_data.get("new_voice_samples", [])
-    file = await context.bot.get_file(voice.file_id)
-    data = await file.download_as_bytearray()
-    samples.append(bytes(data))
-    context.user_data["new_voice_samples"] = samples
-
-    await update.message.reply_text(
-        f"דגימה {len(samples)} התקבלה. "
-        f"שלח/י עוד או /done ליצירת הקול ({len(samples)} דגימות)."
-    )
-    return COLLECTING_SAMPLES
-
-
-async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    samples = context.user_data.get("new_voice_samples", [])
-    name = context.user_data.get("new_voice_name", "ללא שם")
-
-    if not samples:
-        await update.message.reply_text("לא התקבלו דגימות. שלח/י לפחות הקלטה אחת.")
-        return COLLECTING_SAMPLES
-
-    await update.message.reply_text(f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע.")
-    await update.message.reply_chat_action("typing")
-
-    try:
-        sample_urls = []
-        for i, data in enumerate(samples):
-            filename = f"{uuid.uuid4().hex}.ogg"
-            url = upload_sample(user_id, filename, data)
-            sample_urls.append(url)
-
-        elevenlabs_voice_id = clone_voice(name, samples)
-        logger.info("Cloned voice %s -> %s", name, elevenlabs_voice_id)
-
-        voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
-        await set_active_voice(user_id, voice_doc_id)
-
-        await update.message.reply_text(
-            f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
-            "השתמש/י ב-/voices כדי לעבור בין קולות."
-        )
-    except Exception:
-        logger.exception("Voice creation failed")
-        await update.message.reply_text("יצירת הקול נכשלה. נסה/י שוב.")
-
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
-    return ConversationHandler.END
-
-
-async def newvoice_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("new_voice_name", None)
-    context.user_data.pop("new_voice_samples", None)
-    await update.message.reply_text("יצירת הקול בוטלה.")
-    return ConversationHandler.END
 
 
 # ── /prompt — edit audio tag ──────────────────────────────────────────────────
@@ -536,9 +311,6 @@ async def prompt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 # ── /effects — background sound effects ───────────────────────────────────────
-
-WAITING_EFFECT = 11
-
 
 async def cmd_effects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -606,18 +378,6 @@ def main() -> None:
 
     app = Application.builder().token(token).post_init(post_init).build()
 
-    newvoice_conv = ConversationHandler(
-        entry_points=[CommandHandler("newvoice", newvoice_start)],
-        states={
-            WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, newvoice_name)],
-            COLLECTING_SAMPLES: [
-                MessageHandler(filters.VOICE | filters.AUDIO, newvoice_sample),
-                CommandHandler("done", newvoice_done),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", newvoice_cancel)],
-    )
-
     prompt_conv = ConversationHandler(
         entry_points=[CommandHandler("prompt", cmd_prompt)],
         states={
@@ -639,16 +399,11 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", effect_cancel)],
     )
 
-    app.add_handler(newvoice_conv)
     app.add_handler(prompt_conv)
     app.add_handler(effects_conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
-    app.add_handler(CommandHandler("voices", cmd_voices))
-    app.add_handler(CommandHandler("deletevoice", cmd_deletevoice))
-    app.add_handler(CallbackQueryHandler(handle_voice_select, pattern=r"^voice_select:"))
-    app.add_handler(CallbackQueryHandler(handle_voice_delete, pattern=r"^voice_delete:"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 

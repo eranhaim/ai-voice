@@ -14,7 +14,7 @@ services:
   web:
     build: web/
     ports:
-      - "7777:80"
+      - "7778:80"
     depends_on:
       - api
     restart: unless-stopped
