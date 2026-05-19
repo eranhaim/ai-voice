@@ -36,9 +36,9 @@ def voice_kind_for_mode(mode: str) -> str:
 # modality difference baked into the defaults, but any user override applies
 # to both TTS and STS.
 TTS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
-    "stability": 0.4,
+    "stability": 0.5,
     "similarity_boost": 0.75,
-    "style": 0.35,
+    "style": 0.0,
 }
 STS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
     "stability": 0.5,
