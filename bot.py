@@ -84,7 +84,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[flirty natural girl, addressing a male]"
+DEFAULT_AUDIO_TAG = "[flirty temptuous woman addressing a man, Israeli accent]"
 MIN_SAMPLE_DURATION = 5
 
 # Premium mode (PVC) needs a lot of clean audio per voice.
@@ -140,6 +140,7 @@ def text_to_speech(
         output_format="mp3_44100_128",
         language_code=language,
         voice_settings=settings,
+        apply_text_normalization="on",
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -1127,10 +1128,20 @@ async def cmd_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         f"סגנון הדיבור הנוכחי:\n{current}\n\n"
         "שלח/י סגנון חדש, או /reset לחזרה לברירת מחדל, או /cancel לביטול.\n\n"
-        "דוגמאות:\n"
-        "[flirty, speaking to a man]\n"
-        "[warm, gentle, romantic]\n"
-        "[playful, teasing, seductive]"
+        "כתב/י באנגלית בתוך סוגריים מרובעים. אפשר לשלב כמה כיוונים:\n\n"
+        "רגשות ואופי:\n"
+        "[warm, intimate, playful]\n"
+        "[excited, cheerful, energetic]\n"
+        "[calm, soothing, gentle]\n\n"
+        "סגנון דיבור:\n"
+        "[whispering, seductive]\n"
+        "[confident, assertive]\n"
+        "[soft, breathy, intimate]\n\n"
+        "תגובות אנושיות (מוסיפות טבעיות):\n"
+        "[occasional soft laughs]\n"
+        "[sighs between sentences]\n\n"
+        "דוגמה מלאה:\n"
+        "[warm, intimate Israeli girl, relaxed and flirty, with natural Hebrew intonation and occasional giggles]"
     )
     return WAITING_PROMPT
 
