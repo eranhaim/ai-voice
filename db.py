@@ -43,7 +43,7 @@ TTS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
 STS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
     "stability": 0.5,
     "similarity_boost": 0.95,
-    "style": 0.3,
+    "style": 0.0,
 }
 VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style")
 VOICE_SETTING_MIN = 0.0
