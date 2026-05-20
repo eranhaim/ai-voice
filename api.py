@@ -246,10 +246,11 @@ async def download_voice_samples(
     buf.seek(0)
 
     voice_name = doc.get("name", "voice").replace(" ", "_")
+    safe_name = voice_name.encode("ascii", "ignore").decode() or "voice"
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{voice_name}_samples.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_samples.zip"'},
     )
 
 
