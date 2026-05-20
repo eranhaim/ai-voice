@@ -137,7 +137,7 @@ def text_to_speech(
         text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
-        output_format="mp3_44100_128",
+        output_format="mp3_44100_192",
         language_code=language,
         voice_settings=settings,
         apply_text_normalization="on",
@@ -160,7 +160,7 @@ def speech_to_speech(
         voice_id=voice_id,
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
-        output_format="mp3_44100_128",
+        output_format="mp3_44100_192",
         voice_settings=json.dumps(settings),
     )
     buffer = BytesIO()
@@ -212,7 +212,7 @@ def generate_dialogue(turns: list[dict]) -> bytes:
     audio_iter = client.text_to_dialogue.convert(
         inputs=inputs,
         model_id=TTS_MODEL,
-        output_format="mp3_44100_128",
+        output_format="mp3_44100_192",
     )
     buffer = BytesIO()
     for chunk in audio_iter:
