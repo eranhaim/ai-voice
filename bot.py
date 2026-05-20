@@ -83,7 +83,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[לדבר בצורה פלרטטנית וטבעית, בפניה לגבר]"
+DEFAULT_AUDIO_TAG = "[intimate, breathy, flirtatious, soft, casual voice message]"
 MIN_SAMPLE_DURATION = 5
 
 # Premium mode (PVC) needs a lot of clean audio per voice.
@@ -123,7 +123,7 @@ def text_to_speech(
     text: str,
     voice_id: str,
     audio_tag: str = "",
-    speed: float = 1.0,
+    speed: float = 1.1,
     language: str = "he",
     voice_settings: dict | None = None,
 ) -> bytes:
