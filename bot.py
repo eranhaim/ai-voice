@@ -312,22 +312,40 @@ def stitch_audio_clips(clips: list[bytes]) -> bytes:
 
 
 def _probe_duration(audio_bytes: bytes) -> int:
-    """Get audio duration in seconds via ffprobe. Returns 0 on failure."""
+    """Get audio duration in seconds via ffprobe. Returns 0 on failure.
+
+    Opus/OGG files report N/A for format duration when read from a pipe
+    because ffprobe can't seek. We write to a temp file so it can seek,
+    and also query stream-level duration as a fallback.
+    """
+    import tempfile, os
+    tmp_path = None
     try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".audio")
+        os.write(fd, audio_bytes)
+        os.close(fd)
         result = subprocess.run(
             [
                 "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
+                "-show_entries", "format=duration:stream=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
-                "-i", "pipe:0",
+                tmp_path,
             ],
-            input=audio_bytes,
             capture_output=True,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return int(float(result.stdout.strip()))
+            for line in result.stdout.decode(errors="replace").strip().split("\n"):
+                line = line.strip()
+                if line and line != "N/A":
+                    return int(float(line))
     except Exception:
         logger.exception("ffprobe duration detection failed")
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return 0
 
 
