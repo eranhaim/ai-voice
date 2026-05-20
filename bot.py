@@ -86,6 +86,34 @@ STS_MODEL = "eleven_multilingual_sts_v2"
 DEFAULT_AUDIO_TAG = "[intimate, breathy, flirtatious, soft, casual voice message, female speaker addressing a male listener]"
 MIN_SAMPLE_DURATION = 5
 
+ENHANCE_SYSTEM_PROMPT = (
+    "You enhance Hebrew text for a flirty female voice message (text-to-speech).\n"
+    "\n"
+    "Your job: add ElevenLabs v3 audio tags and natural punctuation so it sounds "
+    "like a real girl recorded this on her phone -- not read from a script.\n"
+    "\n"
+    "Audio tags to use (place in square brackets before or after relevant text):\n"
+    "- Reactions: [giggles], [soft laugh], [sighs], [breathy sigh]\n"
+    "- Delivery: [whispers], [playful], [teasing], [intimate], [excited]\n"
+    "- Sounds: [kisses], [mmm]\n"
+    "\n"
+    "Punctuation for natural pacing:\n"
+    "- Add ... for pauses and hesitation\n"
+    "- Add ! or ? where natural\n"
+    "- CAPITALIZE key words for emphasis\n"
+    "- Use -- for mid-sentence breaks\n"
+    "\n"
+    "Rules:\n"
+    "1. NEVER change, add, or remove the actual spoken words. Only insert audio tags "
+    "and adjust punctuation.\n"
+    "2. Less is more: 1-3 audio tags per message maximum. Not every message needs tags.\n"
+    "3. Short messages (under 10 words) usually need 0-1 tags. Don't over-tag.\n"
+    "4. Tags must feel natural for the context -- don't add [giggles] to a serious message.\n"
+    "5. The speaker is a young Israeli woman sending a personal voice message to a man "
+    "she's flirting with.\n"
+    "6. Reply with ONLY the enhanced text. No explanations, no quotes around it."
+)
+
 # Premium mode (PVC) needs a lot of clean audio per voice.
 PREMIUM_MIN_TOTAL_SECONDS = 30 * 60
 PREMIUM_MAX_CAPTCHA_ATTEMPTS = 3
@@ -154,13 +182,14 @@ def speech_to_speech(
 ) -> bytes:
     client = _get_elevenlabs()
     settings = dict(voice_settings or STS_VOICE_SETTINGS_DEFAULTS)
-    # STS endpoint takes voice_settings as a JSON string in the multipart form.
+    settings["use_speaker_boost"] = True
     audio_iter = client.speech_to_speech.convert(
         voice_id=voice_id,
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_192",
         voice_settings=json.dumps(settings),
+        remove_background_noise=True,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -178,6 +207,21 @@ def transcribe(audio_bytes: bytes) -> str:
         language="he",
     )
     return result.text
+
+
+def enhance_text(text: str) -> str:
+    """Run user text through GPT to inject audio tags and natural punctuation."""
+    client = _get_openai()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.7,
+        max_tokens=1000,
+        messages=[
+            {"role": "system", "content": ENHANCE_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+    )
+    return response.choices[0].message.content.strip()
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
@@ -504,6 +548,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     settings = await get_user_settings(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
+
+    try:
+        enhanced = await asyncio.to_thread(enhance_text, text)
+        if enhanced:
+            logger.info("Enhanced text: %s", enhanced[:200])
+            text = enhanced
+    except Exception:
+        logger.exception("Text enhancement failed, using original")
 
     try:
         audio_data = text_to_speech(
