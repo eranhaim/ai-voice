@@ -550,14 +550,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_chat_action("record_voice")
 
     try:
-        enhanced = await asyncio.to_thread(enhance_text, text)
-        if enhanced:
-            logger.info("Enhanced text: %s", enhanced[:200])
-            text = enhanced
-    except Exception:
-        logger.exception("Text enhancement failed, using original")
-
-    try:
         audio_data = text_to_speech(
             text, voice_id, audio_tag, settings["speed"], settings["language"],
             voice_settings=voice_settings_override,
