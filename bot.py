@@ -1046,10 +1046,10 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def _send_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fetch the captcha audio and prompt the user to record themselves repeating it."""
+    """Fetch the captcha and prompt the user to record themselves repeating it."""
     pvc_voice_id = context.user_data.get("pvc_voice_id")
     try:
-        captcha_audio = elevenlabs_pvc.get_pvc_captcha_audio(pvc_voice_id)
+        captcha_data, content_type = elevenlabs_pvc.get_pvc_captcha(pvc_voice_id)
     except Exception:
         logger.exception("Failed to fetch PVC captcha")
         await update.message.reply_text(
@@ -1063,15 +1063,18 @@ async def _send_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         remaining = PREMIUM_MAX_CAPTCHA_ATTEMPTS - attempts
         remaining_label = f"\n(נסיון {attempts + 1}/{PREMIUM_MAX_CAPTCHA_ATTEMPTS}, נשארו {remaining})"
 
-    await update.message.reply_voice(
-        voice=captcha_audio,
-        caption=(
-            "שלב אימות זהות (חובה ב-PVC).\n"
-            "האזן/י לקובץ הקול ושלח/י הקלטה שלך **שאומרת בדיוק את אותו המשפט באנגלית**.\n"
-            "שלח/י הקלטה קולית אחת בלבד."
-            + remaining_label
-        ),
+    caption = (
+        "שלב אימות זהות (חובה ב-PVC).\n"
+        "קרא/י בקול את המשפט באנגלית שמופיע כאן ושלח/י הקלטה קולית.\n"
+        "שלח/י הקלטה קולית אחת בלבד."
+        + remaining_label
     )
+
+    is_image = "image" in content_type or captcha_data[:4] == b"\x89PNG"
+    if is_image:
+        await update.message.reply_photo(photo=captcha_data, caption=caption)
+    else:
+        await update.message.reply_voice(voice=captcha_data, caption=caption)
     return AWAITING_PVC_CAPTCHA
 
 
