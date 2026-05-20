@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices } from "../api";
+import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices, downloadVoiceSamples } from "../api";
 
 export default function Voices() {
   const [systemVoices, setSystemVoices] = useState([]);
@@ -39,6 +39,8 @@ export default function Voices() {
     }
   }
 
+  const [downloading, setDownloading] = useState(null);
+
   async function handleDelete(id, name) {
     if (!confirm(`Delete system voice "${name}"?`)) return;
     try {
@@ -46,6 +48,18 @@ export default function Voices() {
       load();
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  async function handleDownloadSamples(voiceId, voiceName) {
+    setDownloading(voiceId);
+    setError("");
+    try {
+      await downloadVoiceSamples(voiceId, voiceName);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDownloading(null);
     }
   }
 
@@ -124,6 +138,7 @@ export default function Voices() {
               <th>Telegram ID</th>
               <th>ElevenLabs Voice ID</th>
               <th>Created</th>
+              <th>Samples</th>
             </tr>
           </thead>
           <tbody>
@@ -135,6 +150,19 @@ export default function Voices() {
                 <td>{v.telegram_id}</td>
                 <td className="text-cell">{v.elevenlabs_voice_id}</td>
                 <td className="nowrap">{formatDate(v.created_at)}</td>
+                <td>
+                  {v.sample_count > 0 ? (
+                    <button
+                      className="btn-download"
+                      onClick={() => handleDownloadSamples(v.id, v.name)}
+                      disabled={downloading === v.id}
+                    >
+                      {downloading === v.id ? "..." : `⬇ ${v.sample_count}`}
+                    </button>
+                  ) : (
+                    <span style={{ color: "#8b949e" }}>—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -1,5 +1,7 @@
+import io
 import os
 import secrets
+import zipfile
 from datetime import datetime, timezone
 
 import httpx
@@ -7,6 +9,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import get_db
@@ -173,11 +176,13 @@ async def delete_system_voice(voice_id: str, authorization: str | None = Header(
 # ── Custom Voices ────────────────────────────────────────────────────────────
 
 class VoiceOut(BaseModel):
+    id: str
     telegram_id: int
     name: str
     elevenlabs_voice_id: str
     kind: str
     training_status: str
+    sample_count: int
     created_at: str
 
 
@@ -196,14 +201,56 @@ async def list_voices(
     voices = []
     async for doc in db.voices.find(query).sort("created_at", -1):
         voices.append(VoiceOut(
+            id=str(doc["_id"]),
             telegram_id=doc["telegram_id"],
             name=doc["name"],
             elevenlabs_voice_id=doc.get("elevenlabs_voice_id", ""),
             kind=doc.get("kind", "ivc"),
             training_status=doc.get("training_status", "ready"),
+            sample_count=len(doc.get("sample_urls", [])),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
         ))
     return voices
+
+
+@app.get("/api/voices/{voice_doc_id}/samples-zip")
+async def download_voice_samples(
+    voice_doc_id: str,
+    authorization: str | None = Header(default=None),
+):
+    _require_auth(authorization)
+    db = get_db()
+
+    doc = await db.voices.find_one({"_id": ObjectId(voice_doc_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Voice not found")
+
+    sample_urls = doc.get("sample_urls", [])
+    if not sample_urls:
+        raise HTTPException(status_code=404, detail="No samples stored for this voice")
+
+    s3 = get_s3_client()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, url in enumerate(sample_urls):
+            parts = url.replace("s3://", "").split("/", 1)
+            if len(parts) != 2:
+                continue
+            bucket, key = parts
+            ext = key.rsplit(".", 1)[-1] if "." in key else "ogg"
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=key)
+                zf.writestr(f"sample_{i+1}.{ext}", obj["Body"].read())
+            except Exception:
+                continue
+    buf.seek(0)
+
+    voice_name = doc.get("name", "voice").replace(" ", "_")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{voice_name}_samples.zip"'},
+    )
 
 
 # ── Runs ──────────────────────────────────────────────────────────────────────

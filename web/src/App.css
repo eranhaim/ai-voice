@@ -264,6 +264,19 @@ tr:hover td {
   border: 1px solid #da363344;
 }
 
+.btn-download {
+  background: #1f6feb33;
+  color: #58a6ff;
+  border: 1px solid #1f6feb55;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.btn-download:hover { background: #1f6feb55; }
+.btn-download:disabled { opacity: 0.5; cursor: wait; }
+
 /* ── Misc ────────────────────────────────────────────── */
 
 .error {

@@ -107,3 +107,20 @@ export async function deleteSystemVoice(id) {
   });
   if (!res.ok) throw new Error("Failed to delete voice");
 }
+
+export async function downloadVoiceSamples(voiceDocId, voiceName) {
+  const res = await fetch(`${BASE}/voices/${voiceDocId}/samples-zip`, {
+    headers: { Authorization: getToken() },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to download samples");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${voiceName.replace(/\s+/g, "_")}_samples.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
