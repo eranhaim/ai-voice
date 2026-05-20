@@ -189,7 +189,6 @@ def speech_to_speech(
         model_id=STS_MODEL,
         output_format="mp3_44100_192",
         voice_settings=json.dumps(settings),
-        remove_background_noise=True,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
