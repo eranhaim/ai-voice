@@ -46,7 +46,6 @@ from db import (
     find_unnotified_finished_voices,
     mark_voice_notified,
     get_system_voices,
-    seed_system_voices,
     get_voice_settings,
     get_voice_settings_overrides,
     set_voice_setting,
@@ -1946,8 +1945,7 @@ async def poll_pvc_voices(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def post_init(application) -> None:
-    await seed_system_voices()
-    logger.info("System voices seeded")
+    logger.info("Bot initialized")
 
 
 def main() -> None:

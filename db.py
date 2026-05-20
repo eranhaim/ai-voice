@@ -6,16 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 _client: AsyncIOMotorClient | None = None
 
-SYSTEM_VOICES = [
-    {"name": "הקול המפתה של נופר", "elevenlabs_voice_id": "jqcCZkN6Knx8BJ5TBdYR"},
-    {"name": "הקול השכונתי של ליטל", "elevenlabs_voice_id": "Wim44P0dU9HtjyzNnFsv"},
-    {"name": "הקול הצעיר של ליה", "elevenlabs_voice_id": "RSyLgiJaZVhD3kdzAKTD"},
-    {"name": "הקול הלחשני של רומי", "elevenlabs_voice_id": "K8lgMMdmFr7QoEooafEf"},
-    {"name": "הקול המעצבן של מאיה", "elevenlabs_voice_id": "Sm1seazb4gs7RSlUVw7c"},
-    {"name": "הקול המאופק של אגם", "elevenlabs_voice_id": "flHkNRp1BlvT73UL6gyz"},
-]
-
-DEFAULT_VOICE_ID = SYSTEM_VOICES[0]["elevenlabs_voice_id"]
+DEFAULT_VOICE_ID = "jqcCZkN6Knx8BJ5TBdYR"
 
 # User-level mode constants. "casual" uses IVC clones; "premium" uses PVC clones.
 MODE_CASUAL = "casual"
@@ -59,15 +50,6 @@ def get_db():
 
 
 # ── System voices ─────────────────────────────────────────────────────────────
-
-async def seed_system_voices() -> None:
-    db = get_db()
-    for sv in SYSTEM_VOICES:
-        await db.system_voices.update_one(
-            {"elevenlabs_voice_id": sv["elevenlabs_voice_id"]},
-            {"$set": sv},
-            upsert=True,
-        )
 
 
 async def get_system_voices() -> list[dict]:
