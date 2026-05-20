@@ -311,6 +311,26 @@ def stitch_audio_clips(clips: list[bytes]) -> bytes:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _probe_duration(audio_bytes: bytes) -> int:
+    """Get audio duration in seconds via ffprobe. Returns 0 on failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-i", "pipe:0",
+            ],
+            input=audio_bytes,
+            capture_output=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(float(result.stdout.strip()))
+    except Exception:
+        logger.exception("ffprobe duration detection failed")
+    return 0
+
+
 def process_audio_with_effect(voice_bytes: bytes, effect_description: str | None) -> bytes:
     """Convert voice to OGG, optionally mixing in a background sound effect."""
     if not effect_description:
@@ -862,9 +882,10 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
         return COLLECTING_SAMPLES
 
-    if getattr(voice, "duration", None) and voice.duration < MIN_SAMPLE_DURATION:
+    reported_dur = getattr(voice, "duration", None) or 0
+    if reported_dur and reported_dur < MIN_SAMPLE_DURATION:
         await update.message.reply_text(
-            f"ההקלטה קצרה מדי ({voice.duration} שניות). "
+            f"ההקלטה קצרה מדי ({reported_dur} שניות). "
             f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות."
         )
         return COLLECTING_SAMPLES
@@ -877,10 +898,13 @@ async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     file = await context.bot.get_file(voice.file_id)
     data = await file.download_as_bytearray()
-    samples.append(bytes(data))
+    audio_bytes = bytes(data)
+    samples.append(audio_bytes)
     context.user_data["new_voice_samples"] = samples
 
     duration = int(getattr(voice, "duration", 0) or 0)
+    if duration == 0:
+        duration = _probe_duration(audio_bytes)
     total = context.user_data.get("new_voice_total_seconds", 0) + duration
     context.user_data["new_voice_total_seconds"] = total
 
