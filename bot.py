@@ -1078,6 +1078,27 @@ async def _send_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return AWAITING_PVC_CAPTCHA
 
 
+async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Standalone entry point: resume PVC captcha verification for an unverified voice."""
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return ConversationHandler.END
+
+    from db import get_user_voices, VOICE_KIND_PVC
+    pvc_voices = await get_user_voices(user_id, kind=VOICE_KIND_PVC)
+    unverified = [v for v in pvc_voices if v.get("training_status") == "verifying"]
+    if not unverified:
+        await update.message.reply_text("אין קולות שממתינים לאימות. צור/י קול חדש עם /newvoice.")
+        return ConversationHandler.END
+
+    voice = unverified[0]
+    context.user_data["pvc_voice_id"] = voice["elevenlabs_voice_id"]
+    context.user_data["pvc_voice_doc_id"] = voice["id"]
+    context.user_data["pvc_captcha_attempts"] = 0
+    return await _send_pvc_captcha(update, context)
+
+
 async def newvoice_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     samples = context.user_data.get("new_voice_samples", [])
     if not samples:
@@ -1942,7 +1963,10 @@ def main() -> None:
     app = Application.builder().token(token).post_init(post_init).build()
 
     newvoice_conv = ConversationHandler(
-        entry_points=[CommandHandler("newvoice", newvoice_start)],
+        entry_points=[
+            CommandHandler("newvoice", newvoice_start),
+            CommandHandler("verify", cmd_verify),
+        ],
         states={
             WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, newvoice_name)],
             COLLECTING_SAMPLES: [
