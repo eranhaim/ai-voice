@@ -833,12 +833,31 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return COLLECTING_SAMPLES
 
 
+_AUDIO_EXTENSIONS = {
+    ".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aac", ".flac",
+    ".caf", ".aiff", ".aif", ".wma", ".mp4", ".mov", ".webm",
+}
+
+
 async def newvoice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     voice = update.message.voice or update.message.audio
     if not voice and update.message.document:
-        mime = update.message.document.mime_type or ""
-        if mime.startswith("audio/") or mime.startswith("video/"):
-            voice = update.message.document
+        doc = update.message.document
+        mime = (doc.mime_type or "").lower()
+        fname = (doc.file_name or "").lower()
+        ext = ("." + fname.rsplit(".", 1)[-1]) if "." in fname else ""
+        is_audio = (
+            mime.startswith("audio/")
+            or mime.startswith("video/")
+            or ext in _AUDIO_EXTENSIONS
+        )
+        if is_audio:
+            voice = doc
+        else:
+            logger.info(
+                "newvoice_sample: rejected document mime=%s name=%s",
+                doc.mime_type, doc.file_name,
+            )
     if not voice:
         await update.message.reply_text("שלח/י הקלטה קולית, /done לסיום, או /cancel לביטול.")
         return COLLECTING_SAMPLES
