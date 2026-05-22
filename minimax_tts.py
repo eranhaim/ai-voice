@@ -85,6 +85,35 @@ def _to_mp3(audio_bytes: bytes) -> bytes:
     return result.stdout
 
 
+def _loop_mp3_to_min_duration(mp3_bytes: bytes, min_seconds: float = MIN_CLONE_SECONDS) -> bytes:
+    """Loop MP3 until at least min_seconds (for short single-sample clones)."""
+    duration = _probe_duration(mp3_bytes)
+    if duration >= min_seconds:
+        return mp3_bytes
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".mp3")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(mp3_bytes)
+        loops = max(2, int(min_seconds / max(duration, 0.5)) + 2)
+        result = subprocess.run(
+            [
+                "ffmpeg", "-loglevel", "error",
+                "-stream_loop", str(loops),
+                "-i", path,
+                "-t", str(min(min_seconds + 5, MAX_CLONE_SECONDS)),
+                "-c:a", "libmp3lame", "-q:a", "2",
+                "-f", "mp3", "pipe:1",
+            ],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg loop failed: {result.stderr.decode()[:200]}")
+        return result.stdout
+    finally:
+        os.unlink(path)
+
+
 def prepare_clone_audio(samples: list[bytes], stitch_fn) -> bytes:
     """Concatenate samples and convert to MP3 for MiniMax clone upload."""
     if not samples:
@@ -95,6 +124,9 @@ def prepare_clone_audio(samples: list[bytes], stitch_fn) -> bytes:
         combined = stitch_fn(samples)
     mp3 = _to_mp3(combined)
     duration = _probe_duration(mp3)
+    if duration < MIN_CLONE_SECONDS:
+        mp3 = _loop_mp3_to_min_duration(mp3)
+        duration = _probe_duration(mp3)
     if duration < MIN_CLONE_SECONDS:
         raise ValueError(
             f"clone audio too short ({duration:.1f}s, need {MIN_CLONE_SECONDS}s+)"

@@ -128,12 +128,20 @@ async def main() -> int:
     async for doc in cursor:
         if args.limit and processed >= args.limit:
             break
-        result = await backfill_voice(
-            doc,
-            dry_run=args.dry_run,
-            force=args.force,
-            activate=not args.no_activate,
-        )
+        try:
+            result = await backfill_voice(
+                doc,
+                dry_run=args.dry_run,
+                force=args.force,
+                activate=not args.no_activate,
+            )
+        except Exception:
+            logger.exception(
+                "FAILED %s (%s)",
+                doc.get("name", "?"),
+                doc.get("_id"),
+            )
+            result = "error"
         counts[result] = counts.get(result, 0) + 1
         if result in ("ok", "dry_run"):
             processed += 1
