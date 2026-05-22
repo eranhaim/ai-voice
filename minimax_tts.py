@@ -70,19 +70,24 @@ def _probe_duration(audio_bytes: bytes) -> float:
 
 
 def _to_mp3(audio_bytes: bytes) -> bytes:
-    result = subprocess.run(
-        [
-            "ffmpeg", "-loglevel", "error",
-            "-i", "pipe:0",
-            "-c:a", "libmp3lame", "-q:a", "2",
-            "-f", "mp3", "pipe:1",
-        ],
-        input=audio_bytes,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg mp3 convert failed: {result.stderr.decode()[:200]}")
-    return result.stdout
+    fd, path = tempfile.mkstemp(suffix=".audio")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(audio_bytes)
+        result = subprocess.run(
+            [
+                "ffmpeg", "-loglevel", "error",
+                "-i", path,
+                "-c:a", "libmp3lame", "-q:a", "2",
+                "-f", "mp3", "pipe:1",
+            ],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg mp3 convert failed: {result.stderr.decode()[:200]}")
+        return result.stdout
+    finally:
+        os.unlink(path)
 
 
 def _loop_raw_to_min_mp3(raw_bytes: bytes, min_seconds: float = MIN_CLONE_SECONDS) -> bytes:
