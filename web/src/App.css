@@ -192,6 +192,15 @@ tr:hover td {
   white-space: nowrap;
 }
 
+.model-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+  color: #8b949e;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .text-cell {
   max-width: 400px;
   overflow: hidden;

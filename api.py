@@ -261,6 +261,7 @@ class RunOut(BaseModel):
     type: str
     text: str
     voice_name: str
+    model: str = ""
     has_audio: bool
     run_id: str
     created_at: str
@@ -286,6 +287,7 @@ async def list_runs(
             type=doc["type"],
             text=doc.get("text", ""),
             voice_name=doc.get("voice_name", ""),
+            model=doc.get("model", ""),
             has_audio=bool(doc.get("input_audio_url")),
             run_id=str(doc["_id"]),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",

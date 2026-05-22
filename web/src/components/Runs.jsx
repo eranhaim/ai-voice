@@ -99,6 +99,7 @@ export default function Runs() {
               <th>Time</th>
               <th>User</th>
               <th>Type</th>
+              <th>Model</th>
               <th>Voice</th>
               <th>Text</th>
               <th></th>
@@ -114,6 +115,7 @@ export default function Runs() {
                     {r.type.toUpperCase()}
                   </span>
                 </td>
+                <td className="nowrap model-cell">{r.model || "—"}</td>
                 <td>{r.voice_name || "—"}</td>
                 <td className="text-cell">{r.text}</td>
                 <td>

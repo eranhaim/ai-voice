@@ -87,6 +87,7 @@ MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
+MINIMAX_TTS_MODEL = os.getenv("MINIMAX_TTS_MODEL", "speech-2.6-hd")
 
 DEFAULT_AUDIO_TAG = "[talk like a bitch, fast, casual, informal, and always in male-addressing format in Hebrew]"
 MIN_SAMPLE_DURATION = 5
@@ -716,12 +717,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         minimax_voice_id = await resolve_minimax_voice(active, user_id)
+        tts_model = TTS_MODEL
         if minimax_voice_id:
             try:
                 audio_data = await asyncio.to_thread(
                     text_to_speech_minimax,
                     text, minimax_voice_id, settings["speed"], settings["language"],
                 )
+                tts_model = MINIMAX_TTS_MODEL
                 logger.info("TTS via MiniMax voice %s", minimax_voice_id)
             except Exception:
                 logger.exception("MiniMax TTS failed, falling back to ElevenLabs")
@@ -729,6 +732,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     text, voice_id, audio_tag, settings["speed"], settings["language"],
                     voice_settings=voice_settings_override,
                 )
+                tts_model = TTS_MODEL
         else:
             audio_data = text_to_speech(
                 text, voice_id, audio_tag, settings["speed"], settings["language"],
@@ -741,6 +745,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     text_to_speech_minimax,
                     text, minimax_voice_id, settings["speed"], settings["language"],
                 )
+                if audio_data:
+                    tts_model = MINIMAX_TTS_MODEL
             else:
                 audio_data = text_to_speech(
                     text, voice_id, speed=settings["speed"], language=settings["language"],
@@ -752,7 +758,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         ogg_data = process_audio_with_effect(audio_data, effect)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "tts", text, vname)
+        await log_run(user_id, "tts", text, vname, model=tts_model)
     except Exception:
         logger.exception("TTS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -803,7 +809,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "sts", transcription, vname, input_audio_url)
+        await log_run(user_id, "sts", transcription, vname, input_audio_url, model=STS_MODEL)
     except Exception:
         logger.exception("STS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -1690,7 +1696,7 @@ async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT
 
         await update.message.reply_voice(voice=ogg_data)
         voice_names = ", ".join(voices[t["voice_idx"]]["name"] for t in turns)
-        await log_run(user_id, "dialogue_sts", f"{len(turns)} turns", voice_names)
+        await log_run(user_id, "dialogue_sts", f"{len(turns)} turns", voice_names, model=STS_MODEL)
     except Exception:
         logger.exception("STS Dialogue failed")
         await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")
@@ -1754,7 +1760,7 @@ async def handle_dialogue_text(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_voice(voice=ogg_data)
         dialogue_text = " | ".join(f"{t['text']}" for t in turns)
         voice_names = ", ".join(v["name"] for v in voices)
-        await log_run(user_id, "dialogue", dialogue_text, voice_names)
+        await log_run(user_id, "dialogue", dialogue_text, voice_names, model=TTS_MODEL)
     except Exception:
         logger.exception("Dialogue generation failed")
         await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")

@@ -280,7 +280,14 @@ async def get_voice_name(telegram_id: int) -> str:
 
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
-async def log_run(telegram_id: int, run_type: str, text: str, voice_name: str = "", input_audio_url: str = "") -> None:
+async def log_run(
+    telegram_id: int,
+    run_type: str,
+    text: str,
+    voice_name: str = "",
+    input_audio_url: str = "",
+    model: str = "",
+) -> None:
     db = get_db()
     doc = {
         "telegram_id": telegram_id,
@@ -291,6 +298,8 @@ async def log_run(telegram_id: int, run_type: str, text: str, voice_name: str = 
     }
     if input_audio_url:
         doc["input_audio_url"] = input_audio_url
+    if model:
+        doc["model"] = model
     await db.runs.insert_one(doc)
 
 
