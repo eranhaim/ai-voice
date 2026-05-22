@@ -85,16 +85,16 @@ def _to_mp3(audio_bytes: bytes) -> bytes:
     return result.stdout
 
 
-def _loop_mp3_to_min_duration(mp3_bytes: bytes, min_seconds: float = MIN_CLONE_SECONDS) -> bytes:
-    """Loop MP3 until at least min_seconds (for short single-sample clones)."""
-    duration = _probe_duration(mp3_bytes)
+def _loop_raw_to_min_mp3(raw_bytes: bytes, min_seconds: float = MIN_CLONE_SECONDS) -> bytes:
+    """Loop arbitrary audio (OGG/MP3/etc.) until min_seconds, output MP3."""
+    duration = _probe_duration(raw_bytes)
     if duration >= min_seconds:
-        return mp3_bytes
-    import tempfile
-    fd, path = tempfile.mkstemp(suffix=".mp3")
+        return _to_mp3(raw_bytes)
+
+    fd, path = tempfile.mkstemp(suffix=".audio")
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(mp3_bytes)
+            f.write(raw_bytes)
         loops = max(2, int(min_seconds / max(duration, 0.5)) + 2)
         result = subprocess.run(
             [
@@ -122,11 +122,12 @@ def prepare_clone_audio(samples: list[bytes], stitch_fn) -> bytes:
         combined = samples[0]
     else:
         combined = stitch_fn(samples)
-    mp3 = _to_mp3(combined)
-    duration = _probe_duration(mp3)
+    duration = _probe_duration(combined)
     if duration < MIN_CLONE_SECONDS:
-        mp3 = _loop_mp3_to_min_duration(mp3)
-        duration = _probe_duration(mp3)
+        mp3 = _loop_raw_to_min_mp3(combined)
+    else:
+        mp3 = _to_mp3(combined)
+    duration = _probe_duration(mp3)
     if duration < MIN_CLONE_SECONDS:
         raise ValueError(
             f"clone audio too short ({duration:.1f}s, need {MIN_CLONE_SECONDS}s+)"
