@@ -193,3 +193,29 @@ def pitch_shift_ogg(
         )
         return audio_bytes
     return result.stdout
+
+
+def adjust_mp3_speed(mp3_bytes: bytes, speed: float) -> bytes:
+    """Adjust playback speed of MP3 audio. speed=1.0 leaves audio unchanged."""
+    if abs(speed - 1.0) < 1e-3:
+        return mp3_bytes
+
+    tempo_chain = _build_atempo_chain(speed)
+    result = subprocess.run(
+        [
+            "ffmpeg", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-af", tempo_chain,
+            "-c:a", "libmp3lame", "-q:a", "2",
+            "-f", "mp3", "pipe:1",
+        ],
+        input=mp3_bytes,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        logger.error(
+            "ffmpeg speed adjust failed: %s",
+            result.stderr.decode(errors="replace")[:200],
+        )
+        return mp3_bytes
+    return result.stdout

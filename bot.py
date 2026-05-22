@@ -187,7 +187,6 @@ def text_to_speech(
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
     settings = dict(voice_settings or TTS_VOICE_SETTINGS_DEFAULTS)
-    settings["speed"] = speed
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
@@ -200,7 +199,12 @@ def text_to_speech(
     buffer = BytesIO()
     for chunk in audio_iter:
         buffer.write(chunk)
-    return buffer.getvalue()
+    audio = buffer.getvalue()
+    # eleven_v3 accepts voice_settings.speed but does not change output tempo;
+    # apply speed via ffmpeg after generation.
+    if abs(speed - 1.0) >= 1e-3:
+        audio = pitch.adjust_mp3_speed(audio, speed)
+    return audio
 
 
 def speech_to_speech(
