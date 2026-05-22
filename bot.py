@@ -83,7 +83,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[talk like a bitch, fast, casual, flirty, speaking to a man]"
+DEFAULT_AUDIO_TAG = "[talk like a bitch, fast, casual, flirty, addressing a male]"
 MIN_SAMPLE_DURATION = 5
 
 NIKUD_SYSTEM_PROMPT = (
