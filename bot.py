@@ -86,6 +86,27 @@ STS_MODEL = "eleven_multilingual_sts_v2"
 DEFAULT_AUDIO_TAG = "[דיבור מהיר, מפתה, סקסי, ומחוספס, שפונה בלשון זכר]"
 MIN_SAMPLE_DURATION = 5
 
+NIKUD_SYSTEM_PROMPT = (
+    "You add SELECTIVE Hebrew nikud (vowel diacritics) to resolve gender ambiguity.\n"
+    "The speaker is a woman addressing a MAN. Add nikud ONLY to words that are "
+    "gender-ambiguous so TTS pronounces them correctly as male-addressed forms.\n"
+    "\n"
+    "Key male suffixes:\n"
+    "- לך → לְךָ (lekha, to you male)\n"
+    "- איתך → אִיתְּךָ (itkha, with you male)\n"
+    "- שלך → שֶׁלְּךָ (shelkha, yours male)\n"
+    "- אותך → אוֹתְךָ (otkha, you male object)\n"
+    "- עליך → עָלֶיךָ (alekha, on you male)\n"
+    "- אתה → אַתָּה (ata, you male)\n"
+    "\n"
+    "Rules:\n"
+    "1. ONLY add nikud to gender-ambiguous words. Do NOT nikud every word.\n"
+    "2. Wrong nikud is worse than no nikud -- TTS reads mistakes literally.\n"
+    "3. Do NOT change any words, only add nikud diacritics to existing letters.\n"
+    "4. Leave unambiguous words as-is -- TTS handles them from context.\n"
+    "5. Reply with ONLY the text with selective nikud. No explanations."
+)
+
 ENHANCE_SYSTEM_PROMPT = (
     "You enhance Hebrew text for a flirty female voice message (text-to-speech).\n"
     "\n"
@@ -115,7 +136,7 @@ ENHANCE_SYSTEM_PROMPT = (
 )
 
 # Premium mode (PVC) needs a lot of clean audio per voice.
-PREMIUM_MIN_TOTAL_SECONDS = 30 * 60
+PREMIUM_MIN_TOTAL_SECONDS = 20 * 60
 PREMIUM_MAX_CAPTCHA_ATTEMPTS = 3
 
 WAITING_PROMPT = 10
@@ -217,6 +238,21 @@ def enhance_text(text: str) -> str:
         max_tokens=1000,
         messages=[
             {"role": "system", "content": ENHANCE_SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+    )
+    return response.choices[0].message.content.strip()
+
+
+def add_nikud(text: str) -> str:
+    """Add selective Hebrew nikud for male-addressed gender disambiguation."""
+    client = _get_openai()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.0,
+        max_tokens=1000,
+        messages=[
+            {"role": "system", "content": NIKUD_SYSTEM_PROMPT},
             {"role": "user", "content": text},
         ],
     )
@@ -547,6 +583,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     settings = await get_user_settings(user_id)
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
+
+    try:
+        nikud_text = await asyncio.to_thread(add_nikud, text)
+        if nikud_text:
+            logger.info("Nikud: %s", nikud_text[:200])
+            text = nikud_text
+    except Exception:
+        logger.exception("Nikud failed, using original text")
 
     try:
         audio_data = text_to_speech(
