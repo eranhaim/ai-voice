@@ -226,6 +226,11 @@ def text_to_speech_minimax(
     speed: float = 1.0,
     language: str = "he",
 ) -> bytes:
+    # MiniMax reads nikud literally; ElevenLabs uses it for disambiguation.
+    if _has_hebrew_nikud(text):
+        text = _strip_nikud(text)
+    if _has_hebrew(text):
+        language = "he"
     return minimax_tts.synthesize(text, voice_id, speed=speed, language=language)
 
 
@@ -328,6 +333,14 @@ def enhance_text(text: str) -> str:
 
 def _has_hebrew_nikud(text: str) -> bool:
     return any("\u0591" <= c <= "\u05c7" for c in text)
+
+
+def _strip_nikud(text: str) -> str:
+    return "".join(c for c in text if not ("\u0591" <= c <= "\u05c7"))
+
+
+def _has_hebrew(text: str) -> bool:
+    return any("\u05d0" <= c <= "\u05ea" or c in "\u05f0\u05f1\u05f2\u05f3\u05f4" for c in text)
 
 
 def _strip_nikud_response(content: str) -> str:

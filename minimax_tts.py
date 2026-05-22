@@ -234,6 +234,10 @@ def synthesize(
     """Generate MP3 bytes via MiniMax T2A v2."""
     lang_boost = LANGUAGE_BOOST.get(language, "auto")
     speed = max(0.5, min(2.0, float(speed)))
+    logger.info(
+        "MiniMax TTS model=%s lang_boost=%s voice=%s chars=%d",
+        _model(), lang_boost, voice_id, len(text),
+    )
     payload = {
         "model": _model(),
         "text": text,
