@@ -255,7 +255,7 @@ def add_nikud(text: str) -> str:
     """Add selective Hebrew nikud for male-addressed gender disambiguation."""
     client = _get_openai()
     response = client.chat.completions.create(
-        model="gpt-5.4-nano",
+        model="gpt-4o",
         temperature=0.0,
         max_tokens=1000,
         messages=[
