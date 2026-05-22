@@ -261,7 +261,7 @@ def add_nikud(text: str) -> str:
     response = client.chat.completions.create(
         model="gpt-5.4-nano",
         temperature=0.0,
-        max_tokens=1000,
+        max_completion_tokens=1000,
         messages=[
             {"role": "system", "content": NIKUD_SYSTEM_PROMPT},
             {"role": "user", "content": text},
