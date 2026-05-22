@@ -13,5 +13,6 @@ COPY elevenlabs_pvc.py .
 COPY minimax_tts.py .
 COPY pitch.py .
 COPY bot.py .
+COPY backfill_minimax_voices.py .
 
 CMD ["python", "bot.py"]
