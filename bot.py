@@ -83,7 +83,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 
-DEFAULT_AUDIO_TAG = "[דיבור מהיר, מפתה, סקסי, ומחוספס, שפונה בלשון זכר]"
+DEFAULT_AUDIO_TAG = "[talk like a bitch, fast, casual, flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
 
 NIKUD_SYSTEM_PROMPT = (
@@ -98,6 +98,13 @@ NIKUD_SYSTEM_PROMPT = (
     "- אותך → אוֹתְךָ (otkha, you male object)\n"
     "- עליך → עָלֶיךָ (alekha, on you male)\n"
     "- אתה → אַתָּה (ata, you male)\n"
+    "\n"
+    "Female-speaker verb forms addressing a male (add nikud to avoid female-listener sound):\n"
+    "- רוצה → רוֹצָה (rotza, female speaker - not rotzeh)\n"
+    "- חושבת → חוֹשֶׁבֶת (khoshevet)\n"
+    "- אוהבת → אוֹהֶבֶת (ohevet)\n"
+    "- מחכה → מְחַכָּה (mekhaka, female speaker waiting)\n"
+    "- שומעת → שׁוֹמַעַת (shoma'at)\n"
     "\n"
     "Rules:\n"
     "1. ONLY add nikud to gender-ambiguous words. Do NOT nikud every word.\n"
