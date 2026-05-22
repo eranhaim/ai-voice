@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 _client: AsyncIOMotorClient | None = None
 
 DEFAULT_VOICE_ID = "jqcCZkN6Knx8BJ5TBdYR"
-MINIMAX_DEFAULT_VOICE_ID = os.getenv("MINIMAX_DEFAULT_VOICE_ID", "")
+PLAYAI_DEFAULT_VOICE_ID = os.getenv("PLAYAI_DEFAULT_VOICE_ID", "")
 
 # User-level mode constants. "casual" uses IVC clones; "premium" uses PVC clones.
 MODE_CASUAL = "casual"
@@ -50,6 +50,11 @@ def get_db():
     return _client[os.getenv("MONGO_DB", "voice_bot")]
 
 
+def playai_voice_id_from_doc(doc: dict) -> str | None:
+    """PlayAI voice manifest URL; falls back to legacy minimax_voice_id field."""
+    return doc.get("playai_voice_id") or doc.get("minimax_voice_id")
+
+
 # ── System voices ─────────────────────────────────────────────────────────────
 
 
@@ -61,7 +66,7 @@ async def get_system_voices() -> list[dict]:
             "id": str(doc["_id"]),
             "name": doc["name"],
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
-            "minimax_voice_id": doc.get("minimax_voice_id"),
+            "playai_voice_id": playai_voice_id_from_doc(doc),
         })
     return voices
 
@@ -321,33 +326,33 @@ async def get_user_voice_id(telegram_id: int) -> str:
     return voice["elevenlabs_voice_id"]
 
 
-async def get_user_minimax_voice_id(telegram_id: int) -> str | None:
-    """Return the MiniMax voice_id for the user's active voice, or default."""
+async def get_user_playai_voice_id(telegram_id: int) -> str | None:
+    """Return the PlayAI voice manifest for the user's active voice, or default."""
     db = get_db()
     user = await db.users.find_one({"telegram_id": telegram_id})
     if not user or not user.get("active_voice_id"):
-        return MINIMAX_DEFAULT_VOICE_ID or None
+        return PLAYAI_DEFAULT_VOICE_ID or None
 
     vid = user["active_voice_id"]
     voice = await db.system_voices.find_one({"_id": vid})
     if not voice:
         voice = await db.voices.find_one({"_id": vid})
     if not voice:
-        return MINIMAX_DEFAULT_VOICE_ID or None
-    return voice.get("minimax_voice_id") or MINIMAX_DEFAULT_VOICE_ID or None
+        return PLAYAI_DEFAULT_VOICE_ID or None
+    return playai_voice_id_from_doc(voice) or PLAYAI_DEFAULT_VOICE_ID or None
 
 
-async def set_minimax_voice_id(voice_doc_id: str, minimax_voice_id: str) -> None:
+async def set_playai_voice_id(voice_doc_id: str, playai_voice_id: str) -> None:
     db = get_db()
     oid = ObjectId(voice_doc_id)
     updated = await db.voices.update_one(
         {"_id": oid},
-        {"$set": {"minimax_voice_id": minimax_voice_id}},
+        {"$set": {"playai_voice_id": playai_voice_id}},
     )
     if updated.matched_count == 0:
         await db.system_voices.update_one(
             {"_id": oid},
-            {"$set": {"minimax_voice_id": minimax_voice_id}},
+            {"$set": {"playai_voice_id": playai_voice_id}},
         )
 
 
@@ -368,7 +373,7 @@ async def create_voice(
     sample_urls: list[str],
     kind: str = VOICE_KIND_IVC,
     training_status: str = "ready",
-    minimax_voice_id: str | None = None,
+    playai_voice_id: str | None = None,
 ) -> str:
     db = get_db()
     doc = {
@@ -382,8 +387,8 @@ async def create_voice(
         "training_notified": training_status == "ready",
         "created_at": datetime.now(timezone.utc),
     }
-    if minimax_voice_id:
-        doc["minimax_voice_id"] = minimax_voice_id
+    if playai_voice_id:
+        doc["playai_voice_id"] = playai_voice_id
     result = await db.voices.insert_one(doc)
     return str(result.inserted_id)
 
@@ -394,7 +399,7 @@ def _voice_to_dict(doc: dict) -> dict:
         "telegram_id": doc.get("telegram_id"),
         "name": doc["name"],
         "elevenlabs_voice_id": doc.get("elevenlabs_voice_id", ""),
-        "minimax_voice_id": doc.get("minimax_voice_id"),
+        "playai_voice_id": playai_voice_id_from_doc(doc),
         "sample_urls": doc.get("sample_urls", []),
         "kind": doc.get("kind", VOICE_KIND_IVC),
         "training_status": doc.get("training_status", "ready"),
@@ -428,7 +433,7 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
             "telegram_id": None,
             "name": doc["name"],
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
-            "minimax_voice_id": doc.get("minimax_voice_id"),
+            "playai_voice_id": playai_voice_id_from_doc(doc),
             "sample_urls": [],
             "kind": VOICE_KIND_IVC,
             "training_status": "ready",
@@ -514,7 +519,7 @@ async def delete_voice(voice_doc_id: str) -> dict | None:
 
     return {
         "elevenlabs_voice_id": doc.get("elevenlabs_voice_id", ""),
-        "minimax_voice_id": doc.get("minimax_voice_id"),
+        "playai_voice_id": playai_voice_id_from_doc(doc),
         "sample_urls": doc.get("sample_urls", []),
         "kind": doc.get("kind", VOICE_KIND_IVC),
     }

@@ -10,9 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY db.py .
 COPY s3.py .
 COPY elevenlabs_pvc.py .
-COPY minimax_tts.py .
+COPY playai_tts.py .
 COPY pitch.py .
 COPY bot.py .
-COPY backfill_minimax_voices.py .
 
 CMD ["python", "bot.py"]
