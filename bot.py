@@ -105,6 +105,11 @@ NIKUD_SYSTEM_PROMPT = (
     "- אוהבת → אוֹהֶבֶת (ohevet)\n"
     "- מחכה → מְחַכָּה (mekhaka, female speaker waiting)\n"
     "- שומעת → שׁוֹמַעַת (shoma'at)\n"
+    "- שלומך → שְׁלוֹמְךָ (shlomkha, how are you male)\n"
+    "\n"
+    "Homographs (when clearly addressing a male listener):\n"
+    "- אלי (to you) → אֵלֶיךָ — expand to אלייך form with nikud\n"
+    "- אליי (to you) → אֵלֶיךָ — same, not אֵלַי (to me)\n"
     "\n"
     "Rules:\n"
     "1. ONLY add nikud to gender-ambiguous words. Do NOT nikud every word.\n"
@@ -187,6 +192,8 @@ def text_to_speech(
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
     settings = dict(voice_settings or TTS_VOICE_SETTINGS_DEFAULTS)
+    # Keep nikud diacritics intact; normalization can rewrite Hebrew text.
+    text_normalization = "off" if _has_hebrew_nikud(text) else "on"
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
@@ -194,7 +201,7 @@ def text_to_speech(
         output_format="mp3_44100_192",
         language_code=language,
         voice_settings=settings,
-        apply_text_normalization="on",
+        apply_text_normalization=text_normalization,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
@@ -255,19 +262,58 @@ def enhance_text(text: str) -> str:
     return response.choices[0].message.content.strip()
 
 
+def _has_hebrew_nikud(text: str) -> bool:
+    return any("\u0591" <= c <= "\u05c7" for c in text)
+
+
+def _strip_nikud_response(content: str) -> str:
+    result = content.strip()
+    if len(result) >= 2 and result[0] in "\"'`" and result[-1] == result[0]:
+        result = result[1:-1].strip()
+    return result
+
+
 def add_nikud(text: str) -> str:
     """Add selective Hebrew nikud for male-addressed gender disambiguation."""
     client = _get_openai()
+    messages = [
+        {"role": "system", "content": NIKUD_SYSTEM_PROMPT},
+        {"role": "user", "content": text},
+    ]
     response = client.chat.completions.create(
         model="gpt-5.4-nano",
         temperature=0.0,
         max_completion_tokens=1000,
-        messages=[
-            {"role": "system", "content": NIKUD_SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
+        messages=messages,
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    if not content:
+        logger.warning("Nikud model returned empty content")
+        return text
+
+    result = _strip_nikud_response(content)
+    if result == text or not _has_hebrew_nikud(result):
+        messages.append({"role": "assistant", "content": content})
+        messages.append({
+            "role": "user",
+            "content": (
+                "You missed gender-ambiguous words. Add nikud to EVERY ambiguous "
+                "word in the text, especially: אתה, רוצה, לך, איתך, שלך, עליך, "
+                "אלי/אלייך, חושבת, אוהבת, מחכה, שלומך. Reply with ONLY the full text."
+            ),
+        })
+        retry = client.chat.completions.create(
+            model="gpt-5.4-nano",
+            temperature=0.0,
+            max_completion_tokens=1000,
+            messages=messages,
+        )
+        retry_content = retry.choices[0].message.content
+        if retry_content:
+            retry_result = _strip_nikud_response(retry_content)
+            if _has_hebrew_nikud(retry_result):
+                return retry_result
+    return result
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
@@ -597,9 +643,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         nikud_text = await asyncio.to_thread(add_nikud, text)
-        if nikud_text:
+        if nikud_text and nikud_text != text:
             logger.info("Nikud: %s", nikud_text[:200])
             text = nikud_text
+        elif not _has_hebrew_nikud(nikud_text or ""):
+            logger.warning("Nikud unchanged for %d chars: %s", len(text), text[:120])
     except Exception:
         logger.exception("Nikud failed, using original text")
 
