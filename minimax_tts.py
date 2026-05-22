@@ -209,8 +209,8 @@ def synthesize(
             "pitch": 0,
         },
         "audio_setting": {
-            "sample_rate": 44100,
-            "bitrate": 192000,
+            "sample_rate": 32000,
+            "bitrate": 128000,
             "format": "mp3",
             "channel": 1,
         },
