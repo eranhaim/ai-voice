@@ -64,9 +64,13 @@ from db import (
     VOICE_SETTING_MIN,
     VOICE_SETTING_MAX,
     VOICE_SETTING_STEP,
+    get_user_minimax_voice_id,
+    set_minimax_voice_id,
+    MINIMAX_DEFAULT_VOICE_ID,
 )
-from s3 import upload_sample, upload_run_audio, delete_samples
+from s3 import upload_sample, upload_run_audio, delete_samples, download_sample
 import elevenlabs_pvc
+import minimax_tts
 import pitch
 
 load_dotenv()
@@ -79,6 +83,7 @@ logger = logging.getLogger(__name__)
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
@@ -212,6 +217,64 @@ def text_to_speech(
     if abs(speed - 1.0) >= 1e-3:
         audio = pitch.adjust_mp3_speed(audio, speed)
     return audio
+
+
+def text_to_speech_minimax(
+    text: str,
+    voice_id: str,
+    speed: float = 1.0,
+    language: str = "he",
+) -> bytes:
+    return minimax_tts.synthesize(text, voice_id, speed=speed, language=language)
+
+
+def _minimax_voice_id_for_doc(voice_doc_id: str) -> str:
+    return f"av-{voice_doc_id.replace('-', '')}"
+
+
+def clone_minimax_from_samples(
+    samples: list[bytes],
+    voice_doc_id: str,
+    language: str,
+) -> str:
+    voice_id = _minimax_voice_id_for_doc(voice_doc_id)
+    return minimax_tts.clone_from_samples(
+        samples, voice_id, language, stitch_audio_clips,
+    )
+
+
+async def clone_minimax_from_urls(
+    sample_urls: list[str],
+    voice_doc_id: str,
+    language: str,
+) -> str:
+    samples = [await asyncio.to_thread(download_sample, url) for url in sample_urls]
+    return await asyncio.to_thread(
+        clone_minimax_from_samples, samples, voice_doc_id, language,
+    )
+
+
+async def resolve_minimax_voice(
+    active: dict | None,
+    user_id: int,
+) -> str | None:
+    if not MINIMAX_API_KEY:
+        return None
+    if active and active.get("minimax_voice_id"):
+        return active["minimax_voice_id"]
+    if active and active.get("sample_urls"):
+        try:
+            lang = (await get_user_settings(user_id)).get("language", "he")
+            minimax_id = await clone_minimax_from_urls(
+                active["sample_urls"], active["id"], lang,
+            )
+            await set_minimax_voice_id(active["id"], minimax_id)
+            active["minimax_voice_id"] = minimax_id
+            logger.info("MiniMax lazy clone for voice %s -> %s", active["id"], minimax_id)
+            return minimax_id
+        except Exception:
+            logger.exception("MiniMax lazy clone failed for voice %s", active["id"])
+    return await get_user_minimax_voice_id(user_id)
 
 
 def speech_to_speech(
@@ -652,16 +715,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception("Nikud failed, using original text")
 
     try:
-        audio_data = text_to_speech(
-            text, voice_id, audio_tag, settings["speed"], settings["language"],
-            voice_settings=voice_settings_override,
-        )
-        if not audio_data:
-            logger.warning("TTS returned empty audio, retrying without audio tag")
+        minimax_voice_id = await resolve_minimax_voice(active, user_id)
+        if minimax_voice_id:
+            try:
+                audio_data = await asyncio.to_thread(
+                    text_to_speech_minimax,
+                    text, minimax_voice_id, settings["speed"], settings["language"],
+                )
+                logger.info("TTS via MiniMax voice %s", minimax_voice_id)
+            except Exception:
+                logger.exception("MiniMax TTS failed, falling back to ElevenLabs")
+                audio_data = text_to_speech(
+                    text, voice_id, audio_tag, settings["speed"], settings["language"],
+                    voice_settings=voice_settings_override,
+                )
+        else:
             audio_data = text_to_speech(
-                text, voice_id, speed=settings["speed"], language=settings["language"],
+                text, voice_id, audio_tag, settings["speed"], settings["language"],
                 voice_settings=voice_settings_override,
             )
+        if not audio_data:
+            logger.warning("TTS returned empty audio, retrying without audio tag")
+            if minimax_voice_id:
+                audio_data = await asyncio.to_thread(
+                    text_to_speech_minimax,
+                    text, minimax_voice_id, settings["speed"], settings["language"],
+                )
+            else:
+                audio_data = text_to_speech(
+                    text, voice_id, speed=settings["speed"], language=settings["language"],
+                    voice_settings=voice_settings_override,
+                )
         if not audio_data:
             await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
             return
@@ -954,6 +1038,13 @@ async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     delete_elevenlabs_voice(deleted["elevenlabs_voice_id"])
+    if deleted.get("minimax_voice_id"):
+        try:
+            await asyncio.to_thread(minimax_tts.delete_voice, deleted["minimax_voice_id"])
+        except Exception:
+            logger.exception(
+                "Failed to delete MiniMax voice %s", deleted["minimax_voice_id"],
+            )
     try:
         delete_samples(deleted["sample_urls"])
     except Exception:
@@ -1128,6 +1219,16 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
 
         voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
         await set_active_voice(user_id, voice_doc_id)
+
+        try:
+            user_lang = (await get_user_settings(user_id)).get("language", "he")
+            minimax_id = await asyncio.to_thread(
+                clone_minimax_from_samples, samples, voice_doc_id, user_lang,
+            )
+            await set_minimax_voice_id(voice_doc_id, minimax_id)
+            logger.info("MiniMax clone for %s -> %s", name, minimax_id)
+        except Exception:
+            logger.exception("MiniMax clone failed for voice %s", voice_doc_id)
 
         await update.message.reply_text(
             f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
@@ -2048,6 +2149,18 @@ async def poll_pvc_voices(context: ContextTypes.DEFAULT_TYPE) -> None:
         if state == elevenlabs_pvc.PVC_STATE_FINE_TUNED:
             await set_voice_training_status(v["id"], "ready")
             logger.info("PVC voice %s (%s) finished training", v["name"], eid)
+            if not v.get("minimax_voice_id") and v.get("sample_urls"):
+                try:
+                    lang = "he"
+                    if v.get("telegram_id"):
+                        lang = (await get_user_settings(v["telegram_id"])).get("language", "he")
+                    minimax_id = await clone_minimax_from_urls(
+                        v["sample_urls"], v["id"], lang,
+                    )
+                    await set_minimax_voice_id(v["id"], minimax_id)
+                    logger.info("MiniMax PVC clone for %s -> %s", v["name"], minimax_id)
+                except Exception:
+                    logger.exception("MiniMax PVC clone failed for %s", v["id"])
         elif state == elevenlabs_pvc.PVC_STATE_FAILED:
             await set_voice_training_status(v["id"], "failed")
             logger.warning("PVC voice %s (%s) failed training", v["name"], eid)
@@ -2104,6 +2217,11 @@ def main() -> None:
     if not ELEVENLABS_API_KEY:
         print("ELEVENLABS_API_KEY not found in .env")
         return
+
+    if not MINIMAX_API_KEY:
+        logger.warning("MINIMAX_API_KEY not set — TTS will fall back to ElevenLabs")
+    elif not MINIMAX_DEFAULT_VOICE_ID:
+        logger.warning("MINIMAX_DEFAULT_VOICE_ID not set — default voice TTS may fail")
 
     app = Application.builder().token(token).post_init(post_init).build()
 

@@ -31,6 +31,15 @@ def upload_run_audio(telegram_id: int, filename: str, audio_bytes: bytes) -> str
     return f"s3://{bucket}/{key}"
 
 
+def download_sample(url: str) -> bytes:
+    parts = url.replace("s3://", "").split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"invalid s3 url: {url}")
+    bucket, key = parts
+    resp = _get_client().get_object(Bucket=bucket, Key=key)
+    return resp["Body"].read()
+
+
 def delete_samples(urls: list[str]) -> None:
     client = _get_client()
     for url in urls:
