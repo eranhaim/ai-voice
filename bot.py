@@ -90,7 +90,7 @@ TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
 PLAYAI_TTS_MODEL = os.getenv("PLAYAI_TTS_MODEL", "PlayDialog")
 
-DEFAULT_AUDIO_TAG = "[talk like a bitch, fast, casual, informal, and always in male-addressing format in Hebrew]"
+DEFAULT_AUDIO_TAG = " [flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
 
 NIKUD_SYSTEM_PROMPT = (
