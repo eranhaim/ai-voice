@@ -27,14 +27,14 @@ def voice_kind_for_mode(mode: str) -> str:
 # modality difference baked into the defaults, but any user override applies
 # to both TTS and STS.
 TTS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
-    "stability": 0.75,
-    "similarity_boost": 0.95,
-    "style": 0.8,
+    "stability": 0.50,
+    "similarity_boost": 0.80,
+    "style": 0.0,
 }
 STS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
-    "stability": 0.70,
-    "similarity_boost": 0.95,
-    "style": 0.30,
+    "stability": 0.65,
+    "similarity_boost": 0.90,
+    "style": 0.0,
 }
 VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style")
 VOICE_SETTING_MIN = 0.0
