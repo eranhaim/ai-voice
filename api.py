@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import secrets
 import zipfile
@@ -7,13 +8,16 @@ from datetime import datetime, timezone
 import httpx
 from bson import ObjectId
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header
+from elevenlabs.client import ElevenLabs
+from fastapi import FastAPI, File, Form, HTTPException, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from db import get_db
 from s3 import _get_client as get_s3_client
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -171,6 +175,69 @@ async def delete_system_voice(voice_id: str, authorization: str | None = Header(
     result = await db.system_voices.delete_one({"_id": ObjectId(voice_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Voice not found")
+
+
+@app.post("/api/clone-voice", response_model=SystemVoiceOut, status_code=201)
+async def clone_voice_from_files(
+    name: str = Form(...),
+    files: list[UploadFile] = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Upload audio files, clone via ElevenLabs IVC, and add as system voice."""
+    _require_auth(authorization)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not configured")
+
+    audio_buffers = []
+    for f in files:
+        data = await f.read()
+        if not data:
+            continue
+        buf = io.BytesIO(data)
+        buf.name = f.filename or f"sample_{len(audio_buffers)}.mp3"
+        audio_buffers.append(buf)
+
+    if not audio_buffers:
+        raise HTTPException(status_code=400, detail="All uploaded files were empty")
+
+    logger.info("Cloning voice '%s' from %d files", name, len(audio_buffers))
+
+    try:
+        client = ElevenLabs(api_key=api_key)
+        voice = client.voices.ivc.create(
+            name=name,
+            files=audio_buffers,
+            remove_background_noise=True,
+        )
+        elevenlabs_voice_id = voice.voice_id
+        logger.info("IVC clone created: %s -> %s", name, elevenlabs_voice_id)
+    except Exception as e:
+        logger.exception("IVC clone failed")
+        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)[:200]}")
+
+    db = get_db()
+    existing = await db.system_voices.find_one({"elevenlabs_voice_id": elevenlabs_voice_id})
+    if existing:
+        return SystemVoiceOut(
+            id=str(existing["_id"]),
+            name=existing["name"],
+            elevenlabs_voice_id=elevenlabs_voice_id,
+        )
+
+    result = await db.system_voices.insert_one({
+        "name": name,
+        "elevenlabs_voice_id": elevenlabs_voice_id,
+    })
+    return SystemVoiceOut(
+        id=str(result.inserted_id),
+        name=name,
+        elevenlabs_voice_id=elevenlabs_voice_id,
+    )
 
 
 # ── Custom Voices ────────────────────────────────────────────────────────────

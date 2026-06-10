@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices, downloadVoiceSamples } from "../api";
+import { useState, useEffect, useRef } from "react";
+import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices, downloadVoiceSamples, cloneVoice } from "../api";
 
 export default function Voices() {
   const [systemVoices, setSystemVoices] = useState([]);
@@ -40,6 +40,32 @@ export default function Voices() {
   }
 
   const [downloading, setDownloading] = useState(null);
+  const [cloneName, setCloneName] = useState("");
+  const [cloneFiles, setCloneFiles] = useState(null);
+  const [cloning, setCloning] = useState(false);
+  const [cloneStatus, setCloneStatus] = useState("");
+  const fileInputRef = useRef(null);
+
+  async function handleClone(e) {
+    e.preventDefault();
+    if (!cloneName || !cloneFiles || cloneFiles.length === 0) return;
+    setCloning(true);
+    setCloneStatus("Uploading & cloning... this may take a minute");
+    setError("");
+    try {
+      const result = await cloneVoice(cloneName, cloneFiles);
+      setCloneStatus(`Voice "${result.name}" created (${result.elevenlabs_voice_id})`);
+      setCloneName("");
+      setCloneFiles(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      load();
+    } catch (e) {
+      setError(e.message);
+      setCloneStatus("");
+    } finally {
+      setCloning(false);
+    }
+  }
 
   async function handleDelete(id, name) {
     if (!confirm(`Delete system voice "${name}"?`)) return;
@@ -91,6 +117,35 @@ export default function Voices() {
         />
         <button type="submit">Add Voice</button>
       </form>
+
+      <h3 style={{ margin: "2rem 0 1rem", color: "#f0f3f6" }}>Clone Voice from Audio</h3>
+      <form onSubmit={handleClone} className="add-form clone-form">
+        <input
+          type="text"
+          placeholder="Voice Name"
+          value={cloneName}
+          onChange={(e) => setCloneName(e.target.value)}
+          required
+          disabled={cloning}
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="audio/*,.mp3,.m4a,.wav,.ogg,.opus,.aac,.flac"
+          multiple
+          onChange={(e) => setCloneFiles(e.target.files)}
+          required
+          disabled={cloning}
+        />
+        <button type="submit" disabled={cloning || !cloneName || !cloneFiles?.length}>
+          {cloning ? "Cloning..." : "Clone Voice"}
+        </button>
+      </form>
+      {cloneStatus && <p className="clone-status">{cloneStatus}</p>}
+      <p style={{ color: "#8b949e", fontSize: "0.8rem", margin: "0.3rem 0 1rem" }}>
+        Upload audio files of a single speaker. Background noise will be removed automatically.
+        The voice will be added as a system voice available to all users.
+      </p>
 
       {error && <p className="error">{error}</p>}
 

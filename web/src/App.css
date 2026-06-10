@@ -286,6 +286,28 @@ tr:hover td {
 .btn-download:hover { background: #1f6feb55; }
 .btn-download:disabled { opacity: 0.5; cursor: wait; }
 
+.clone-form input[type="file"] {
+  color: #c9d1d9;
+  font-size: 0.85rem;
+}
+.clone-form input[type="file"]::file-selector-button {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+.clone-form input[type="file"]::file-selector-button:hover {
+  background: #30363d;
+}
+.clone-status {
+  color: #58a6ff;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
 /* ── Misc ────────────────────────────────────────────── */
 
 .error {

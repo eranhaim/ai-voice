@@ -108,6 +108,24 @@ export async function deleteSystemVoice(id) {
   if (!res.ok) throw new Error("Failed to delete voice");
 }
 
+export async function cloneVoice(name, files) {
+  const form = new FormData();
+  form.append("name", name);
+  for (const f of files) {
+    form.append("files", f);
+  }
+  const res = await fetch(`${BASE}/clone-voice`, {
+    method: "POST",
+    headers: { Authorization: getToken() },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Voice cloning failed");
+  }
+  return res.json();
+}
+
 export async function downloadVoiceSamples(voiceDocId, voiceName) {
   const res = await fetch(`${BASE}/voices/${voiceDocId}/samples-zip`, {
     headers: { Authorization: getToken() },
