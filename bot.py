@@ -64,13 +64,9 @@ from db import (
     VOICE_SETTING_MIN,
     VOICE_SETTING_MAX,
     VOICE_SETTING_STEP,
-    get_user_playai_voice_id,
-    playai_voice_id_from_doc,
-    PLAYAI_DEFAULT_VOICE_ID,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
 import elevenlabs_pvc
-import playai_tts
 import pitch
 
 load_dotenv()
@@ -83,12 +79,9 @@ logger = logging.getLogger(__name__)
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-PLAYAI_API_KEY = os.getenv("PLAYAI_API_KEY", "")
-PLAYAI_USER_ID = os.getenv("PLAYAI_USER_ID", "")
 
 TTS_MODEL = "eleven_v3"
 STS_MODEL = "eleven_multilingual_sts_v2"
-PLAYAI_TTS_MODEL = os.getenv("PLAYAI_TTS_MODEL", "PlayDialog")
 
 DEFAULT_AUDIO_TAG = " [flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
@@ -219,31 +212,6 @@ def text_to_speech(
     if abs(speed - 1.0) >= 1e-3:
         audio = pitch.adjust_mp3_speed(audio, speed)
     return audio
-
-
-def text_to_speech_playai(
-    text: str,
-    voice_id: str,
-    speed: float = 1.0,
-    language: str = "he",
-) -> bytes:
-    # PlayAI handles Hebrew natively; strip nikud meant for ElevenLabs disambiguation.
-    if _has_hebrew_nikud(text):
-        text = _strip_nikud(text)
-    if _has_hebrew(text):
-        language = "he"
-    return playai_tts.synthesize(text, voice_id, speed=speed, language=language)
-
-
-async def resolve_playai_voice(
-    active: dict | None,
-    user_id: int,
-) -> str | None:
-    if not PLAYAI_API_KEY or not PLAYAI_USER_ID:
-        return None
-    if active and playai_voice_id_from_doc(active):
-        return playai_voice_id_from_doc(active)
-    return await get_user_playai_voice_id(user_id)
 
 
 def speech_to_speech(
@@ -681,60 +649,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("TTS from %d with voice %s: %d chars", user_id, voice_id, len(text))
     await update.message.reply_chat_action("record_voice")
 
-    try:
-        nikud_text = await asyncio.to_thread(add_nikud, text)
-        if nikud_text and nikud_text != text:
-            logger.info("Nikud: %s", nikud_text[:200])
-            text = nikud_text
-        elif not _has_hebrew_nikud(nikud_text or ""):
-            logger.warning("Nikud unchanged for %d chars: %s", len(text), text[:120])
-    except Exception:
-        logger.exception("Nikud failed, using original text")
+    # Nikud disabled for now — add_nikud() is still available if needed later.
 
     try:
-        playai_voice_id = await resolve_playai_voice(active, user_id)
-        tts_model = TTS_MODEL
-        if playai_voice_id:
-            try:
-                audio_data = await asyncio.to_thread(
-                    text_to_speech_playai,
-                    text, playai_voice_id, settings["speed"], settings["language"],
-                )
-                tts_model = PLAYAI_TTS_MODEL
-                logger.info("TTS via PlayAI voice %s", playai_voice_id[:60])
-            except Exception:
-                logger.exception("PlayAI TTS failed, falling back to ElevenLabs")
-                audio_data = text_to_speech(
-                    text, voice_id, audio_tag, settings["speed"], settings["language"],
-                    voice_settings=voice_settings_override,
-                )
-                tts_model = TTS_MODEL
-        else:
-            audio_data = text_to_speech(
-                text, voice_id, audio_tag, settings["speed"], settings["language"],
-                voice_settings=voice_settings_override,
-            )
+        audio_data = text_to_speech(
+            text, voice_id, audio_tag, settings["speed"], settings["language"],
+            voice_settings=voice_settings_override,
+        )
         if not audio_data:
             logger.warning("TTS returned empty audio, retrying without audio tag")
-            if playai_voice_id:
-                audio_data = await asyncio.to_thread(
-                    text_to_speech_playai,
-                    text, playai_voice_id, settings["speed"], settings["language"],
-                )
-                if audio_data:
-                    tts_model = PLAYAI_TTS_MODEL
-            else:
-                audio_data = text_to_speech(
-                    text, voice_id, speed=settings["speed"], language=settings["language"],
-                    voice_settings=voice_settings_override,
-                )
+            audio_data = text_to_speech(
+                text, voice_id, speed=settings["speed"], language=settings["language"],
+                voice_settings=voice_settings_override,
+            )
         if not audio_data:
             await update.message.reply_text("לא הצלחתי ליצור הקלטה. נסה/י שוב.")
             return
         ogg_data = process_audio_with_effect(audio_data, effect)
         logger.info("TTS done: %d bytes -> %d bytes ogg", len(audio_data), len(ogg_data))
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "tts", text, vname, model=tts_model)
+        await log_run(user_id, "tts", text, vname, model=TTS_MODEL)
     except Exception:
         logger.exception("TTS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -2170,11 +2104,6 @@ def main() -> None:
     if not ELEVENLABS_API_KEY:
         print("ELEVENLABS_API_KEY not found in .env")
         return
-
-    if not PLAYAI_API_KEY or not PLAYAI_USER_ID:
-        logger.warning("PLAYAI_API_KEY or PLAYAI_USER_ID not set — TTS will fall back to ElevenLabs")
-    elif not PLAYAI_DEFAULT_VOICE_ID:
-        logger.warning("PLAYAI_DEFAULT_VOICE_ID not set — default voice TTS may fail")
 
     app = Application.builder().token(token).post_init(post_init).build()
 
