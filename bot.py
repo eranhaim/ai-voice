@@ -184,34 +184,24 @@ def text_to_speech(
     text: str,
     voice_id: str,
     audio_tag: str = "",
-    speed: float = 1.1,
+    speed: float = 1.0,
     language: str = "he",
     voice_settings: dict | None = None,
 ) -> bytes:
     client = _get_elevenlabs()
     audio_tag = _ensure_brackets(audio_tag) if audio_tag else ""
     tagged_text = f"{audio_tag} {text}".strip() if audio_tag else text
-    settings = dict(voice_settings or TTS_VOICE_SETTINGS_DEFAULTS)
-    # Keep nikud diacritics intact; normalization can rewrite Hebrew text.
-    text_normalization = "off" if _has_hebrew_nikud(text) else "on"
     audio_iter = client.text_to_speech.convert(
         text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
-        output_format="mp3_44100_192",
+        output_format="mp3_44100_128",
         language_code=language,
-        voice_settings=settings,
-        apply_text_normalization=text_normalization,
     )
     buffer = BytesIO()
     for chunk in audio_iter:
         buffer.write(chunk)
-    audio = buffer.getvalue()
-    # eleven_v3 accepts voice_settings.speed but does not change output tempo;
-    # apply speed via ffmpeg after generation.
-    if abs(speed - 1.0) >= 1e-3:
-        audio = pitch.adjust_mp3_speed(audio, speed)
-    return audio
+    return buffer.getvalue()
 
 
 def speech_to_speech(
@@ -220,14 +210,12 @@ def speech_to_speech(
     voice_settings: dict | None = None,
 ) -> bytes:
     client = _get_elevenlabs()
-    settings = dict(voice_settings or STS_VOICE_SETTINGS_DEFAULTS)
-    settings["use_speaker_boost"] = True
     audio_iter = client.speech_to_speech.convert(
         voice_id=voice_id,
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
-        output_format="mp3_44100_192",
-        voice_settings=json.dumps(settings),
+        output_format="mp3_44100_128",
+        voice_settings='{"stability": 0.8, "similarity_boost": 0.95, "style": 0.0}',
     )
     buffer = BytesIO()
     for chunk in audio_iter:
