@@ -29,11 +29,11 @@ def voice_kind_for_mode(mode: str) -> str:
 TTS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
     "stability": 0.75,
     "similarity_boost": 0.95,
-    "style": 0.60,
+    "style": 0.0,
 }
 STS_VOICE_SETTINGS_DEFAULTS: dict[str, float] = {
-    "stability": 0.40,
-    "similarity_boost": 0.70,
+    "stability": 0.70,
+    "similarity_boost": 0.95,
     "style": 0.30,
 }
 VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style")
