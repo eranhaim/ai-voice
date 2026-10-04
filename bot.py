@@ -12,6 +12,7 @@ from openai import OpenAI
 from elevenlabs.client import ElevenLabs
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import InvalidToken
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -2316,7 +2317,10 @@ def main() -> None:
     print(f"  Voice -> STS ({STS_MODEL})")
     print(f"  PVC poller: every {PVC_POLL_INTERVAL_SECONDS}s")
     print("Ready.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except InvalidToken:
+        logger.error("Telegram bot token was rejected. Rotate and update TELEGRAM_BOT_TOKEN.")
 
 
 if __name__ == "__main__":
