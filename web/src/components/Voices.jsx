@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from "react";
-import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices, downloadVoiceSamples, cloneVoice } from "../api";
+import { getSystemVoices, addSystemVoice, deleteSystemVoice, getVoices, cloneVoice, confirmVoiceConsent } from "../api";
 
 export default function Voices() {
   const [systemVoices, setSystemVoices] = useState([]);
   const [customVoices, setCustomVoices] = useState([]);
   const [voiceId, setVoiceId] = useState("");
   const [voiceName, setVoiceName] = useState("");
+  const [systemConsentReference, setSystemConsentReference] = useState("");
+  const [systemConsentConfirmed, setSystemConsentConfirmed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -28,35 +30,40 @@ export default function Voices() {
   async function handleAdd(e) {
     e.preventDefault();
     setError("");
-    if (!voiceId || !voiceName) return;
+    if (!voiceId || !voiceName || !systemConsentConfirmed || !systemConsentReference) return;
     try {
-      await addSystemVoice(voiceName, voiceId);
+      await addSystemVoice(voiceName, voiceId, systemConsentReference);
       setVoiceId("");
       setVoiceName("");
+      setSystemConsentReference("");
+      setSystemConsentConfirmed(false);
       load();
     } catch (e) {
       setError(e.message);
     }
   }
 
-  const [downloading, setDownloading] = useState(null);
   const [cloneName, setCloneName] = useState("");
   const [cloneFiles, setCloneFiles] = useState(null);
+  const [cloneConsentReference, setCloneConsentReference] = useState("");
+  const [cloneConsentConfirmed, setCloneConsentConfirmed] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [cloneStatus, setCloneStatus] = useState("");
   const fileInputRef = useRef(null);
 
   async function handleClone(e) {
     e.preventDefault();
-    if (!cloneName || !cloneFiles || cloneFiles.length === 0) return;
+    if (!cloneName || !cloneFiles || cloneFiles.length === 0 || !cloneConsentConfirmed || !cloneConsentReference) return;
     setCloning(true);
     setCloneStatus("Uploading & cloning... this may take a minute");
     setError("");
     try {
-      const result = await cloneVoice(cloneName, cloneFiles);
+      const result = await cloneVoice(cloneName, cloneFiles, cloneConsentReference);
       setCloneStatus(`Voice "${result.name}" created (${result.elevenlabs_voice_id})`);
       setCloneName("");
       setCloneFiles(null);
+      setCloneConsentReference("");
+      setCloneConsentConfirmed(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
       load();
     } catch (e) {
@@ -77,15 +84,14 @@ export default function Voices() {
     }
   }
 
-  async function handleDownloadSamples(voiceId, voiceName) {
-    setDownloading(voiceId);
-    setError("");
+  async function handleConfirmConsent(voiceId, voiceName) {
+    const reference = window.prompt(`Enter the consent record reference for "${voiceName}" (agreement, ticket, or recorded approval ID):`);
+    if (!reference?.trim()) return;
     try {
-      await downloadVoiceSamples(voiceId, voiceName);
+      await confirmVoiceConsent(voiceId, reference.trim());
+      load();
     } catch (e) {
       setError(e.message);
-    } finally {
-      setDownloading(null);
     }
   }
 
@@ -115,6 +121,22 @@ export default function Voices() {
           onChange={(e) => setVoiceName(e.target.value)}
           required
         />
+        <input
+          type="text"
+          placeholder="Consent record reference"
+          value={systemConsentReference}
+          onChange={(e) => setSystemConsentReference(e.target.value)}
+          required
+        />
+        <label className="consent-field">
+          <input
+            type="checkbox"
+            checked={systemConsentConfirmed}
+            onChange={(e) => setSystemConsentConfirmed(e.target.checked)}
+            required
+          />
+          I confirm this creator authorized use of this voice.
+        </label>
         <button type="submit">Add Voice</button>
       </form>
 
@@ -137,14 +159,32 @@ export default function Voices() {
           required
           disabled={cloning}
         />
-        <button type="submit" disabled={cloning || !cloneName || !cloneFiles?.length}>
+        <input
+          type="text"
+          placeholder="Consent record reference"
+          value={cloneConsentReference}
+          onChange={(e) => setCloneConsentReference(e.target.value)}
+          required
+          disabled={cloning}
+        />
+        <label className="consent-field">
+          <input
+            type="checkbox"
+            checked={cloneConsentConfirmed}
+            onChange={(e) => setCloneConsentConfirmed(e.target.checked)}
+            required
+            disabled={cloning}
+          />
+          I confirm this creator authorized voice cloning.
+        </label>
+        <button type="submit" disabled={cloning || !cloneName || !cloneFiles?.length || !cloneConsentConfirmed || !cloneConsentReference}>
           {cloning ? "Cloning..." : "Clone Voice"}
         </button>
       </form>
       {cloneStatus && <p className="clone-status">{cloneStatus}</p>}
       <p style={{ color: "#8b949e", fontSize: "0.8rem", margin: "0.3rem 0 1rem" }}>
-        Upload audio files of a single speaker. Background noise will be removed automatically.
-        The voice will be added as a system voice available to all users.
+        Upload clean audio of one authorized speaker. References are validated and sent to ElevenLabs,
+        but this application does not retain new source files.
       </p>
 
       {error && <p className="error">{error}</p>}
@@ -157,6 +197,7 @@ export default function Voices() {
             <tr>
               <th>Name</th>
               <th>ElevenLabs Voice ID</th>
+              <th>Consent</th>
               <th></th>
             </tr>
           </thead>
@@ -165,6 +206,7 @@ export default function Voices() {
               <tr key={v.id}>
                 <td>{v.name}</td>
                 <td className="text-cell">{v.elevenlabs_voice_id}</td>
+                <td><ConsentCell voice={v} onConfirm={handleConfirmConsent} /></td>
                 <td>
                   <button
                     className="btn-delete"
@@ -193,7 +235,7 @@ export default function Voices() {
               <th>Telegram ID</th>
               <th>ElevenLabs Voice ID</th>
               <th>Created</th>
-              <th>Samples</th>
+              <th>Consent</th>
             </tr>
           </thead>
           <tbody>
@@ -205,25 +247,24 @@ export default function Voices() {
                 <td>{v.telegram_id}</td>
                 <td className="text-cell">{v.elevenlabs_voice_id}</td>
                 <td className="nowrap">{formatDate(v.created_at)}</td>
-                <td>
-                  {v.sample_count > 0 ? (
-                    <button
-                      className="btn-download"
-                      onClick={() => handleDownloadSamples(v.id, v.name)}
-                      disabled={downloading === v.id}
-                    >
-                      {downloading === v.id ? "..." : `⬇ ${v.sample_count}`}
-                    </button>
-                  ) : (
-                    <span style={{ color: "#8b949e" }}>—</span>
-                  )}
-                </td>
+                <td><ConsentCell voice={v} onConfirm={handleConfirmConsent} /></td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
     </div>
+  );
+}
+
+function ConsentCell({ voice, onConfirm }) {
+  if (voice.consent_status === "confirmed") {
+    return <span className="badge badge-ready">Confirmed</span>;
+  }
+  return (
+    <button className="btn-consent" onClick={() => onConfirm(voice.id, voice.name)}>
+      Record consent
+    </button>
   );
 }
 

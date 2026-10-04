@@ -1,18 +1,26 @@
-# Hebrew Voice Bot — Telegram + ElevenLabs
+# Hebrew Voice Bot — Telegram + ElevenLabs V4
 
-A Telegram bot that converts text to speech (Hebrew female voice) and converts voice messages to a female voice using ElevenLabs.
+A Telegram bot that generates Hebrew speech and converts authorized source audio with ElevenLabs.
 
 - **Send text** -> bot replies with a spoken voice message
 - **Send a voice recording** -> bot converts it to a female voice and sends it back
 
-## Modes
+## Voice engine and authorization
 
 `/settings` lets each user pick between two modes:
 
-- **Casual** — Default. Uses ElevenLabs *Instant Voice Clone* (IVC). Fast, only needs a few seconds of audio, voice is ready immediately.
-- **Premium** — Uses ElevenLabs *Professional Voice Clone* (PVC). Requires at least 30 minutes of clean audio per voice, an in-Telegram captcha verification step, and waiting hours for fine-tuning to complete. The result is the highest-fidelity clone ElevenLabs offers.
+- **Casual** — Instant Voice Clone (IVC), requiring at least one minute of clean,
+  single-speaker reference audio.
+- **Premium** — Professional Voice Clone (PVC), requiring at least 20 minutes of
+  clean references plus ElevenLabs identity verification and asynchronous training.
 
-PVC requires the ElevenLabs Creator tier or higher (each PVC slot eats into the account's professional-voice quota). The bot polls training status every 5 minutes via a JobQueue and DMs the owner when each Premium voice is ready.
+Text and dialogue generation use ElevenLabs `eleven_v4`. V4 is a speech-synthesis
+model, not a voice-enrollment API. Existing voices without recorded consent are blocked.
+
+Only create, import, remix, or generate with a creator voice after its explicit consent
+has been recorded. New reference audio is validated before enrollment and is not retained by
+this application or uploaded to S3. Never commit or log source audio, consent records,
+API keys, or voice data.
 
 ---
 
@@ -27,7 +35,7 @@ Create a `.env` file (see `.env.example`):
 ```
 TELEGRAM_BOT_TOKEN=your_token
 ELEVENLABS_API_KEY=your_key
-ELEVENLABS_VOICE_ID=XB0fDUnXU5powFXDhCwa
+ELEVENLABS_MODEL=eleven_v4
 ```
 
 ```bash
@@ -100,7 +108,7 @@ docker compose ps
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | `ELEVENLABS_API_KEY` | API key from elevenlabs.io |
-| `ELEVENLABS_VOICE_ID` | Voice to use (see below) |
+| `ELEVENLABS_MODEL` | `eleven_v4` for text and dialogue synthesis |
 
 ### Available Free-Tier Voices
 

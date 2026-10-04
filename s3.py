@@ -17,13 +17,6 @@ def _get_client():
     return _client
 
 
-def upload_sample(telegram_id: int, filename: str, audio_bytes: bytes) -> str:
-    bucket = os.getenv("AWS_S3_BUCKET")
-    key = f"voices/{telegram_id}/{filename}"
-    _get_client().put_object(Bucket=bucket, Key=key, Body=audio_bytes)
-    return f"s3://{bucket}/{key}"
-
-
 def upload_run_audio(telegram_id: int, filename: str, audio_bytes: bytes) -> str:
     bucket = os.getenv("AWS_S3_BUCKET")
     key = f"runs/{telegram_id}/{filename}"

@@ -87,11 +87,16 @@ export async function getSystemVoices() {
   return res.json();
 }
 
-export async function addSystemVoice(name, elevenlabs_voice_id) {
+export async function addSystemVoice(name, elevenlabs_voice_id, consent_reference) {
   const res = await fetch(`${BASE}/system-voices`, {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ name, elevenlabs_voice_id }),
+    body: JSON.stringify({
+      name,
+      elevenlabs_voice_id,
+      consent_confirmed: true,
+      consent_reference,
+    }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -108,9 +113,11 @@ export async function deleteSystemVoice(id) {
   if (!res.ok) throw new Error("Failed to delete voice");
 }
 
-export async function cloneVoice(name, files) {
+export async function cloneVoice(name, files, consentReference) {
   const form = new FormData();
   form.append("name", name);
+  form.append("consent_confirmed", "true");
+  form.append("consent_reference", consentReference);
   for (const f of files) {
     form.append("files", f);
   }
@@ -126,19 +133,15 @@ export async function cloneVoice(name, files) {
   return res.json();
 }
 
-export async function downloadVoiceSamples(voiceDocId, voiceName) {
-  const res = await fetch(`${BASE}/voices/${voiceDocId}/samples-zip`, {
-    headers: { Authorization: getToken() },
+export async function confirmVoiceConsent(voiceId, consentReference) {
+  const res = await fetch(`${BASE}/voices/${voiceId}/consent`, {
+    method: "PATCH",
+    headers: headers(),
+    body: JSON.stringify({ consent_reference: consentReference }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to download samples");
+    throw new Error(err.detail || "Failed to confirm consent");
   }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${voiceName.replace(/\s+/g, "_")}_samples.zip`;
-  a.click();
-  URL.revokeObjectURL(url);
+  return res.json();
 }
