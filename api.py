@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Header, UploadFile
 from pydantic import BaseModel
 
 from audio_quality import ReferenceAudioError, validate_reference_audio
-from db import CONSENT_STATUS_CONFIRMED, get_db, mark_voice_consented
+from db import get_db
 from s3 import _get_client as get_s3_client
 
 logger = logging.getLogger(__name__)
@@ -120,15 +120,12 @@ async def delete_user(telegram_id: int, authorization: str | None = Header(defau
 class SystemVoiceIn(BaseModel):
     name: str
     elevenlabs_voice_id: str
-    consent_confirmed: bool
-    consent_reference: str
 
 
 class SystemVoiceOut(BaseModel):
     id: str
     name: str
     elevenlabs_voice_id: str
-    consent_status: str
 
 
 @app.get("/api/system-voices", response_model=list[SystemVoiceOut])
@@ -141,7 +138,6 @@ async def list_system_voices(authorization: str | None = Header(default=None)):
             id=str(doc["_id"]),
             name=doc["name"],
             elevenlabs_voice_id=doc["elevenlabs_voice_id"],
-            consent_status=doc.get("consent_status", "unknown"),
         ))
     return voices
 
@@ -149,11 +145,6 @@ async def list_system_voices(authorization: str | None = Header(default=None)):
 @app.post("/api/system-voices", response_model=SystemVoiceOut, status_code=201)
 async def add_system_voice(body: SystemVoiceIn, authorization: str | None = Header(default=None)):
     _require_auth(authorization)
-    if not body.consent_confirmed or not body.consent_reference.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Explicit consent confirmation and a provenance reference are required.",
-        )
     db = get_db()
 
     existing = await db.system_voices.find_one({"elevenlabs_voice_id": body.elevenlabs_voice_id})
@@ -163,15 +154,11 @@ async def add_system_voice(body: SystemVoiceIn, authorization: str | None = Head
     result = await db.system_voices.insert_one({
         "name": body.name,
         "elevenlabs_voice_id": body.elevenlabs_voice_id,
-        "consent_status": CONSENT_STATUS_CONFIRMED,
-        "consent_provenance": body.consent_reference.strip(),
-        "consented_at": datetime.now(timezone.utc),
     })
     return SystemVoiceOut(
         id=str(result.inserted_id),
         name=body.name,
         elevenlabs_voice_id=body.elevenlabs_voice_id,
-        consent_status=CONSENT_STATUS_CONFIRMED,
     )
 
 
@@ -189,20 +176,13 @@ async def delete_system_voice(voice_id: str, authorization: str | None = Header(
 async def clone_voice_from_files(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
-    consent_confirmed: bool = Form(...),
-    consent_reference: str = Form(...),
     authorization: str | None = Header(default=None),
 ):
-    """Clone an explicitly authorized voice without retaining reference files."""
+    """Clone a voice without retaining reference files."""
     _require_auth(authorization)
 
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
-    if not consent_confirmed or not consent_reference.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Explicit consent confirmation and a provenance reference are required.",
-        )
 
     api_key = os.getenv("ELEVENLABS_API_KEY", "")
     if not api_key:
@@ -227,7 +207,7 @@ async def clone_voice_from_files(
     if not audio_buffers:
         raise HTTPException(status_code=400, detail="All uploaded files were empty")
 
-    logger.info("Cloning authorized voice '%s' from %d validated files", name, len(audio_buffers))
+    logger.info("Cloning voice '%s' from %d validated files", name, len(audio_buffers))
 
     try:
         client = ElevenLabs(api_key=api_key)
@@ -249,21 +229,16 @@ async def clone_voice_from_files(
             id=str(existing["_id"]),
             name=existing["name"],
             elevenlabs_voice_id=elevenlabs_voice_id,
-            consent_status=existing.get("consent_status", "unknown"),
         )
 
     result = await db.system_voices.insert_one({
         "name": name,
         "elevenlabs_voice_id": elevenlabs_voice_id,
-        "consent_status": CONSENT_STATUS_CONFIRMED,
-        "consent_provenance": consent_reference.strip(),
-        "consented_at": datetime.now(timezone.utc),
     })
     return SystemVoiceOut(
         id=str(result.inserted_id),
         name=name,
         elevenlabs_voice_id=elevenlabs_voice_id,
-        consent_status=CONSENT_STATUS_CONFIRMED,
     )
 
 
@@ -276,7 +251,6 @@ class VoiceOut(BaseModel):
     elevenlabs_voice_id: str
     kind: str
     training_status: str
-    consent_status: str
     sample_count: int
     created_at: str
 
@@ -302,31 +276,10 @@ async def list_voices(
             elevenlabs_voice_id=doc.get("elevenlabs_voice_id", ""),
             kind=doc.get("kind", "ivc"),
             training_status=doc.get("training_status", "ready"),
-            consent_status=doc.get("consent_status", "unknown"),
             sample_count=len(doc.get("sample_urls", [])),
             created_at=doc["created_at"].isoformat() if doc.get("created_at") else "",
         ))
     return voices
-
-
-class ConsentUpdate(BaseModel):
-    consent_reference: str
-
-
-@app.patch("/api/voices/{voice_doc_id}/consent")
-async def confirm_voice_consent(
-    voice_doc_id: str,
-    body: ConsentUpdate,
-    authorization: str | None = Header(default=None),
-):
-    _require_auth(authorization)
-    try:
-        updated = await mark_voice_consented(voice_doc_id, body.consent_reference)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    if not updated:
-        raise HTTPException(status_code=404, detail="Voice not found")
-    return {"status": "confirmed"}
 
 
 # ── Runs ──────────────────────────────────────────────────────────────────────

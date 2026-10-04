@@ -160,20 +160,6 @@ button:disabled {
   min-width: 140px;
 }
 
-.consent-field {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: #c9d1d9;
-  font-size: 0.8rem;
-  max-width: 260px;
-}
-
-.add-form .consent-field input {
-  flex: none;
-  min-width: auto;
-}
-
 /* ── Table ───────────────────────────────────────────── */
 
 table {
@@ -299,15 +285,6 @@ tr:hover td {
 }
 .btn-download:hover { background: #1f6feb55; }
 .btn-download:disabled { opacity: 0.5; cursor: wait; }
-
-.btn-consent {
-  background: transparent;
-  border-color: #d29922;
-  color: #e3b341;
-  padding: 0.3rem 0.7rem;
-  font-size: 0.8rem;
-}
-.btn-consent:hover { background: #d2992233; }
 
 .clone-form input[type="file"] {
   color: #c9d1d9;

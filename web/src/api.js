@@ -46,7 +46,6 @@ export async function addUser(telegram_id, name) {
   }
   return res.json();
 }
-
 export async function deleteUser(telegram_id) {
   const res = await fetch(`${BASE}/users/${telegram_id}`, {
     method: "DELETE",
@@ -80,22 +79,19 @@ export async function resendAudio(runId) {
   }
   return res.json();
 }
-
 export async function getSystemVoices() {
   const res = await fetch(`${BASE}/system-voices`, { headers: headers() });
   if (res.status === 401) throw new Error("Unauthorized");
   return res.json();
 }
 
-export async function addSystemVoice(name, elevenlabs_voice_id, consent_reference) {
+export async function addSystemVoice(name, elevenlabs_voice_id) {
   const res = await fetch(`${BASE}/system-voices`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       name,
       elevenlabs_voice_id,
-      consent_confirmed: true,
-      consent_reference,
     }),
   });
   if (!res.ok) {
@@ -113,11 +109,9 @@ export async function deleteSystemVoice(id) {
   if (!res.ok) throw new Error("Failed to delete voice");
 }
 
-export async function cloneVoice(name, files, consentReference) {
+export async function cloneVoice(name, files) {
   const form = new FormData();
   form.append("name", name);
-  form.append("consent_confirmed", "true");
-  form.append("consent_reference", consentReference);
   for (const f of files) {
     form.append("files", f);
   }
@@ -129,19 +123,6 @@ export async function cloneVoice(name, files, consentReference) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Voice cloning failed");
-  }
-  return res.json();
-}
-
-export async function confirmVoiceConsent(voiceId, consentReference) {
-  const res = await fetch(`${BASE}/voices/${voiceId}/consent`, {
-    method: "PATCH",
-    headers: headers(),
-    body: JSON.stringify({ consent_reference: consentReference }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to confirm consent");
   }
   return res.json();
 }

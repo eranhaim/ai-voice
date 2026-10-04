@@ -13,7 +13,6 @@ MODE_PREMIUM = "premium"
 # Voice-level clone-tier constants.
 VOICE_KIND_IVC = "ivc"
 VOICE_KIND_PVC = "pvc"
-CONSENT_STATUS_CONFIRMED = "confirmed"
 
 
 def voice_kind_for_mode(mode: str) -> str:
@@ -51,16 +50,14 @@ def get_db():
 # ── System voices ─────────────────────────────────────────────────────────────
 
 
-async def get_system_voices(consented_only: bool = False) -> list[dict]:
+async def get_system_voices() -> list[dict]:
     db = get_db()
     voices = []
-    query = {"consent_status": CONSENT_STATUS_CONFIRMED} if consented_only else {}
-    async for doc in db.system_voices.find(query):
+    async for doc in db.system_voices.find():
         voices.append({
             "id": str(doc["_id"]),
             "name": doc["name"],
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
-            "consent_status": doc.get("consent_status", "unknown"),
         })
     return voices
 
@@ -306,12 +303,9 @@ async def create_voice(
     name: str,
     elevenlabs_voice_id: str,
     sample_urls: list[str],
-    consent_provenance: str,
     kind: str = VOICE_KIND_IVC,
     training_status: str = "ready",
 ) -> str:
-    if not consent_provenance.strip():
-        raise ValueError("consent provenance is required")
     db = get_db()
     doc = {
         "telegram_id": telegram_id,
@@ -321,9 +315,6 @@ async def create_voice(
         "kind": kind,
         "training_status": training_status,
         "training_notified": training_status == "ready",
-        "consent_status": CONSENT_STATUS_CONFIRMED,
-        "consent_provenance": consent_provenance.strip(),
-        "consented_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc),
     }
     result = await db.voices.insert_one(doc)
@@ -340,8 +331,6 @@ def _voice_to_dict(doc: dict) -> dict:
         "kind": doc.get("kind", VOICE_KIND_IVC),
         "training_status": doc.get("training_status", "ready"),
         "training_notified": doc.get("training_notified", True),
-        "consent_status": doc.get("consent_status", "unknown"),
-        "consent_provenance": doc.get("consent_provenance", ""),
         "created_at": doc.get("created_at"),
     }
 
@@ -349,7 +338,6 @@ def _voice_to_dict(doc: dict) -> dict:
 async def get_user_voices(
     telegram_id: int,
     kind: str | None = None,
-    consented_only: bool = False,
 ) -> list[dict]:
     db = get_db()
     query: dict = {"telegram_id": telegram_id}
@@ -359,8 +347,6 @@ async def get_user_voices(
             query["$or"] = [{"kind": VOICE_KIND_IVC}, {"kind": {"$exists": False}}]
         else:
             query["kind"] = kind
-    if consented_only:
-        query["consent_status"] = CONSENT_STATUS_CONFIRMED
     voices = []
     async for doc in db.voices.find(query).sort("created_at", -1):
         voices.append(_voice_to_dict(doc))
@@ -381,8 +367,6 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
             "kind": VOICE_KIND_IVC,
             "training_status": "ready",
             "training_notified": True,
-            "consent_status": doc.get("consent_status", "unknown"),
-            "consent_provenance": doc.get("consent_provenance", ""),
         }
     doc = await db.voices.find_one({"_id": oid})
     if not doc:
@@ -397,37 +381,6 @@ async def get_active_voice_doc(telegram_id: int) -> dict | None:
     if not user or not user.get("active_voice_id"):
         return None
     return await get_voice_by_id(str(user["active_voice_id"]))
-
-
-async def get_authorized_active_voice(telegram_id: int) -> dict | None:
-    """Return the active voice only when its recorded consent is confirmed."""
-    voice = await get_active_voice_doc(telegram_id)
-    if voice and voice.get("consent_status") == CONSENT_STATUS_CONFIRMED:
-        return voice
-    return None
-
-
-async def mark_voice_consented(voice_doc_id: str, consent_provenance: str) -> bool:
-    """Record explicit consent for a legacy system or custom voice."""
-    if not consent_provenance.strip():
-        raise ValueError("consent provenance is required")
-    db = get_db()
-    fields = {
-        "consent_status": CONSENT_STATUS_CONFIRMED,
-        "consent_provenance": consent_provenance.strip(),
-        "consented_at": datetime.now(timezone.utc),
-    }
-    result = await db.system_voices.update_one(
-        {"_id": ObjectId(voice_doc_id)},
-        {"$set": fields},
-    )
-    if result.matched_count:
-        return True
-    result = await db.voices.update_one(
-        {"_id": ObjectId(voice_doc_id)},
-        {"$set": fields},
-    )
-    return bool(result.matched_count)
 
 
 async def set_voice_training_status(

@@ -1,11 +1,11 @@
 # Hebrew Voice Bot — Telegram + ElevenLabs V4
 
-A Telegram bot that generates Hebrew speech and converts authorized source audio with ElevenLabs.
+A Telegram bot that generates Hebrew speech and converts source audio with ElevenLabs.
 
 - **Send text** -> bot replies with a spoken voice message
 - **Send a voice recording** -> bot converts it to a female voice and sends it back
 
-## Voice engine and authorization
+## Voice engine
 
 `/settings` lets each user pick between two modes:
 
@@ -15,12 +15,10 @@ A Telegram bot that generates Hebrew speech and converts authorized source audio
   clean references plus ElevenLabs identity verification and asynchronous training.
 
 Text and dialogue generation use ElevenLabs `eleven_v4`. V4 is a speech-synthesis
-model, not a voice-enrollment API. Existing voices without recorded consent are blocked.
+model, not a voice-enrollment API.
 
-Only create, import, remix, or generate with a creator voice after its explicit consent
-has been recorded. New reference audio is validated before enrollment and is not retained by
-this application or uploaded to S3. Never commit or log source audio, consent records,
-API keys, or voice data.
+New reference audio is validated before enrollment and is not retained by this application
+or uploaded to S3. Never commit or log source audio, API keys, or voice data.
 
 ---
 

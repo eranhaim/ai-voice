@@ -36,7 +36,6 @@ from db import (
     set_user_mode,
     voice_kind_for_mode,
     get_active_voice_doc,
-    get_authorized_active_voice,
     set_active_voice,
     create_voice,
     get_user_voices,
@@ -162,7 +161,7 @@ SELECTING_ENHANCE_VOICE, WRITING_ENHANCE_PROMPT, CONFIRMING_ENHANCE = 14, 15, 16
 
 UNAUTHORIZED_MSG = "אין לך הרשאה להשתמש בבוט הזה."
 
-WAITING_NAME, COLLECTING_SAMPLES, AWAITING_PVC_CAPTCHA, AWAITING_CONSENT = range(4)
+WAITING_NAME, COLLECTING_SAMPLES, AWAITING_PVC_CAPTCHA = range(3)
 
 
 def _get_elevenlabs() -> ElevenLabs:
@@ -648,10 +647,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("הטקסט ארוך מדי. מקסימום 5,000 תווים.")
         return
 
-    active = await get_authorized_active_voice(user_id)
+    active = await get_active_voice_doc(user_id)
     if not active:
         await update.message.reply_text(
-            "צריך לבחור קול מורשה עם הסכמה מתועדת דרך /voices לפני יצירת הקלטה."
+            "צריך לבחור קול פעיל דרך /voices לפני יצירת הקלטה."
         )
         return
     voice_id = active["elevenlabs_voice_id"]
@@ -698,10 +697,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not voice:
         return
 
-    active = await get_authorized_active_voice(user_id)
+    active = await get_active_voice_doc(user_id)
     if not active:
         await update.message.reply_text(
-            "צריך לבחור קול מורשה עם הסכמה מתועדת דרך /voices לפני המרת הקלטה."
+            "צריך לבחור קול פעיל דרך /voices לפני המרת הקלטה."
         )
         return
     voice_id = active["elevenlabs_voice_id"]
@@ -759,12 +758,12 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     mode = await get_user_mode(user_id)
-    active_voice = await get_authorized_active_voice(user_id)
+    active_voice = await get_active_voice_doc(user_id)
     current_voice_id = active_voice["elevenlabs_voice_id"] if active_voice else ""
     buttons: list[list[InlineKeyboardButton]] = []
 
     if mode == MODE_PREMIUM:
-        custom = await get_user_voices(user_id, kind=VOICE_KIND_PVC, consented_only=True)
+        custom = await get_user_voices(user_id, kind=VOICE_KIND_PVC)
         if not custom:
             await update.message.reply_text(
                 "אין לך עדיין קולות Premium. צור/י קול חדש עם /newvoice "
@@ -788,8 +787,8 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 )])
         header = "קולות Premium שלך:\n(>> מסמן את הנוכחי, 🎛 לכוונון)"
     else:
-        system_voices = await get_system_voices(consented_only=True)
-        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC, consented_only=True)
+        system_voices = await get_system_voices()
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
         for sv in system_voices:
             is_active = sv["elevenlabs_voice_id"] == current_voice_id
             label = (">> " if is_active else "") + sv["name"]
@@ -829,9 +828,6 @@ async def handle_voice_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if voice.get("telegram_id") not in (None, user_id):
         await query.answer("אין לך הרשאה לקול הזה.", show_alert=True)
-        return
-    if voice.get("consent_status") != "confirmed":
-        await query.answer("לקול הזה אין הסכמה מתועדת.", show_alert=True)
         return
     if voice.get("training_status", "ready") != "ready":
         await query.answer("הקול עוד לא מוכן לשימוש.", show_alert=True)
@@ -996,38 +992,15 @@ async def newvoice_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     mode = await get_user_mode(user_id)
     context.user_data["new_voice_mode"] = mode
-    await update.message.reply_text(
-        "אפשר ליצור קול רק מחומר שהאדם המדובר נתן הרשאה מפורשת להשתמש בו לשיבוט קול. "
-        "אין להעלות הקלטות של אדם אחר ללא אישורו.\n\n"
-        "בלחיצה על אישור את/ה מצהיר/ה שהמקור מורשה ושאפשר לשמור את פרטי ההסכמה לצורכי ביקורת.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("אני מאשר/ת שיש הסכמה", callback_data="clone_consent:confirm"),
-        ]]),
-    )
-    return AWAITING_CONSENT
-
-
-async def newvoice_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    if query.data != "clone_consent:confirm":
-        return ConversationHandler.END
-
-    user_id = query.from_user.id
-    context.user_data["voice_consent_provenance"] = (
-        f"Telegram consent confirmation by authorized user {user_id}"
-    )
-    mode = context.user_data.get("new_voice_mode", MODE_CASUAL)
-
     if mode == MODE_PREMIUM:
-        await query.edit_message_text(
+        await update.message.reply_text(
             "יצירת קול Premium.\n"
             f"דרוש לפחות {PREMIUM_MIN_TOTAL_SECONDS // 60} דקות של הקלטות נקיות.\n"
             "האימון לוקח עד 24 שעות. אעדכן/י אותך כשהקול מוכן.\n\n"
             "איזה שם לתת לקול?"
         )
     else:
-        await query.edit_message_text(
+        await update.message.reply_text(
             "יצירת קול מהיר.\n"
             f"דרושות לפחות {CASUAL_MIN_TOTAL_SECONDS // 60} דקות של הקלטות נקיות. "
             "איזה שם לתת לקול החדש?"
@@ -1058,7 +1031,7 @@ async def newvoice_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     else:
         await update.message.reply_text(
             f"שם הקול: {name}\n\n"
-            "עכשיו שלח/י הקלטות נקיות של האדם המורשה, עם דובר/ת יחיד/ה וללא מוזיקה או רעש רקע.\n"
+            "עכשיו שלח/י הקלטות נקיות, עם דובר/ת יחיד/ה וללא מוזיקה או רעש רקע.\n"
             f"דרושות לפחות {CASUAL_MIN_TOTAL_SECONDS // 60} דקות בסך הכול.\n"
             "אפשר לשלוח כמה קבצים ביחד בבת אחת!\n"
             f"כל הקלטה חייבת להיות לפחות {MIN_SAMPLE_DURATION} שניות.\n"
@@ -1173,7 +1146,6 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
     samples = context.user_data.get("new_voice_samples", [])
     name = context.user_data.get("new_voice_name", "ללא שם")
     total = context.user_data.get("new_voice_total_seconds", 0)
-    consent_provenance = context.user_data.get("voice_consent_provenance", "")
 
     if total < CASUAL_MIN_TOTAL_SECONDS:
         remaining = CASUAL_MIN_TOTAL_SECONDS - total
@@ -1182,10 +1154,6 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
             "שלח/י הקלטות נוספות או /cancel."
         )
         return COLLECTING_SAMPLES
-    if not consent_provenance:
-        await update.message.reply_text("חסרה הצהרת הסכמה. התחילו מחדש עם /newvoice.")
-        return ConversationHandler.END
-
     await update.message.reply_text(
         f"יוצר את הקול \"{name}\" מ-{len(samples)} דגימה/ות... זה עלול לקחת רגע."
     )
@@ -1200,7 +1168,6 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
             name,
             elevenlabs_voice_id,
             [],
-            consent_provenance,
         )
         await set_active_voice(user_id, voice_doc_id)
 
@@ -1219,7 +1186,6 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
     samples = context.user_data.get("new_voice_samples", [])
     name = context.user_data.get("new_voice_name", "ללא שם")
     total = context.user_data.get("new_voice_total_seconds", 0)
-    consent_provenance = context.user_data.get("voice_consent_provenance", "")
 
     if total < PREMIUM_MIN_TOTAL_SECONDS:
         rem = PREMIUM_MIN_TOTAL_SECONDS - total
@@ -1228,10 +1194,6 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
             f"{PREMIUM_MIN_TOTAL_SECONDS // 60} דקות. שלח/י עוד הקלטות או /cancel."
         )
         return COLLECTING_SAMPLES
-    if not consent_provenance:
-        await update.message.reply_text("חסרה הצהרת הסכמה. התחילו מחדש עם /newvoice.")
-        return ConversationHandler.END
-
     await update.message.reply_text(
         f"יוצר את הקול הפרימיום \"{name}\" מ-{len(samples)} דגימות "
         f"({total // 60}:{total % 60:02d}).\n"
@@ -1247,7 +1209,7 @@ async def _newvoice_done_premium(update: Update, context: ContextTypes.DEFAULT_T
         elevenlabs_pvc.upload_pvc_samples(pvc_voice_id, samples)
 
         voice_doc_id = await create_voice(
-            user_id, name, pvc_voice_id, [], consent_provenance,
+            user_id, name, pvc_voice_id, [],
             kind=VOICE_KIND_PVC, training_status="verifying",
         )
         context.user_data["pvc_voice_doc_id"] = voice_doc_id
@@ -1396,7 +1358,6 @@ async def newvoice_pvc_captcha(update: Update, context: ContextTypes.DEFAULT_TYP
 def _clear_newvoice_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     for k in (
         "new_voice_name", "new_voice_samples", "new_voice_mode", "new_voice_total_seconds",
-        "voice_consent_provenance",
         "pvc_voice_id", "pvc_voice_doc_id", "pvc_captcha_attempts", "_last_media_group_id",
     ):
         context.user_data.pop(k, None)
@@ -1486,7 +1447,7 @@ async def cmd_dialogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     mode = await get_user_mode(user_id)
     if mode == MODE_PREMIUM:
-        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_PVC, consented_only=True)
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_PVC)
         custom_voices = [v for v in custom_voices if v.get("training_status", "ready") == "ready"]
         all_voices = custom_voices
         if not all_voices:
@@ -1495,8 +1456,8 @@ async def cmd_dialogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             )
             return ConversationHandler.END
     else:
-        system_voices = await get_system_voices(consented_only=True)
-        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC, consented_only=True)
+        system_voices = await get_system_voices()
+        custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
         all_voices = system_voices + custom_voices
 
     context.user_data["dialogue_available"] = all_voices
@@ -1902,7 +1863,6 @@ async def cmd_enhance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     custom_voices = await get_user_voices(
         user_id,
         kind=VOICE_KIND_IVC,
-        consented_only=True,
     )
     if not custom_voices:
         await update.message.reply_text(
@@ -1934,10 +1894,6 @@ async def handle_enhance_voice_pick(update: Update, context: ContextTypes.DEFAUL
     if voice.get("telegram_id") != query.from_user.id:
         await query.edit_message_text("אין לך הרשאה לקול הזה.")
         return ConversationHandler.END
-    if voice.get("consent_status") != "confirmed":
-        await query.edit_message_text("לקול הזה אין הסכמה מתועדת.")
-        return ConversationHandler.END
-
     context.user_data["enhance_voice"] = voice
     await query.edit_message_text(
         f"קול נבחר: {voice['name']}\n\n"
@@ -2038,7 +1994,6 @@ async def handle_enhance_save(update: Update, context: ContextTypes.DEFAULT_TYPE
             new_name,
             real_voice_id,
             [],
-            f"Derived from consented voice {original_voice['id']}",
         )
         await set_active_voice(user_id, voice_doc_id)
 
@@ -2212,9 +2167,6 @@ def main() -> None:
             CommandHandler("verify", cmd_verify),
         ],
         states={
-            AWAITING_CONSENT: [
-                CallbackQueryHandler(newvoice_consent, pattern=r"^clone_consent:"),
-            ],
             WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, newvoice_name)],
             COLLECTING_SAMPLES: [
                 MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.ALL, newvoice_sample),

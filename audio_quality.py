@@ -1,4 +1,4 @@
-"""Validation for authorized voice-reference audio."""
+"""Validation for voice-reference audio."""
 
 from __future__ import annotations
 
