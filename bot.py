@@ -172,6 +172,14 @@ def _get_openai() -> OpenAI:
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
+def _telegram_token_is_valid(token: str) -> bool:
+    response = httpx.get(
+        f"https://api.telegram.org/bot{token}/getMe",
+        timeout=15.0,
+    )
+    return response.status_code == 200
+
+
 # ── ElevenLabs operations ────────────────────────────────────────────────────
 
 def _run_with_provider_retry(operation):
@@ -2185,6 +2193,14 @@ def main() -> None:
 
     if not ELEVENLABS_API_KEY:
         print("ELEVENLABS_API_KEY not found in .env")
+        return
+
+    try:
+        if not _telegram_token_is_valid(token):
+            logger.error("Telegram bot token was rejected. Rotate and update TELEGRAM_BOT_TOKEN.")
+            return
+    except httpx.HTTPError:
+        logger.error("Could not validate TELEGRAM_BOT_TOKEN with Telegram.")
         return
 
     app = Application.builder().token(token).post_init(post_init).build()
