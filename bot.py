@@ -245,7 +245,9 @@ def speech_to_speech(
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
         output_format="mp3_44100_128",
-        voice_settings=settings,
+        # speech-to-speech is multipart/form-data, so voice_settings must be a
+        # JSON string. text-to-speech takes a JSON body and accepts the dict.
+        voice_settings=json.dumps(settings),
     ))
 
 
