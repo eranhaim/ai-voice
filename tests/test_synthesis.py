@@ -78,6 +78,15 @@ class SynthesisTests(unittest.TestCase):
         """eleven_v4 is text-to-speech only; speech-to-speech needs an sts model."""
         self.assertIn("sts", bot.STS_MODEL)
 
+    def test_sts_isolates_speech_and_keeps_bitrate_high(self):
+        client = _Client()
+        with patch.object(bot, "_get_elevenlabs", return_value=client):
+            bot.speech_to_speech(b"recording", "authorized-voice")
+
+        request = client.speech_to_speech.request
+        self.assertTrue(request["remove_background_noise"])
+        self.assertEqual(request["output_format"], "mp3_44100_192")
+
 
 if __name__ == "__main__":
     unittest.main()

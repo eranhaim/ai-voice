@@ -244,7 +244,12 @@ def speech_to_speech(
         voice_id=voice_id,
         audio=BytesIO(audio_bytes),
         model_id=STS_MODEL,
-        output_format="mp3_44100_128",
+        # The reply is re-encoded to Opus before it reaches Telegram, so ask the
+        # converter for a high bitrate to limit tandem-coding artefacts.
+        output_format="mp3_44100_192",
+        # Telegram voice notes are recorded on phones in real rooms. Isolating
+        # the speech first stops room tone being cloned into the output.
+        remove_background_noise=True,
         # speech-to-speech is multipart/form-data, so voice_settings must be a
         # JSON string. text-to-speech takes a JSON body and accepts the dict.
         voice_settings=json.dumps(settings),
@@ -413,7 +418,7 @@ def mix_voice_with_effect(voice_bytes: bytes, effect_bytes: bytes) -> bytes:
             "-i", "/tmp/_effect.mp3",
             "-filter_complex",
             "[1:a]volume=0.15,apad[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2",
-            "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", "pipe:1",
+            "-c:a", "libopus", "-b:a", "96k", "-f", "ogg", "pipe:1",
         ],
         input=voice_bytes,
         capture_output=True,
@@ -425,8 +430,10 @@ def mix_voice_with_effect(voice_bytes: bytes, effect_bytes: bytes) -> bytes:
 
 
 def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
+    # This is the last encode before the listener hears it, so it caps the
+    # quality of everything upstream. Opus 96k is transparent for speech.
     result = subprocess.run(
-        ["ffmpeg", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "64k", "-f", "ogg", "pipe:1"],
+        ["ffmpeg", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "96k", "-f", "ogg", "pipe:1"],
         input=mp3_bytes,
         capture_output=True,
     )

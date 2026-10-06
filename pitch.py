@@ -180,7 +180,10 @@ def pitch_shift_ogg(
             "ffmpeg", "-loglevel", "error",
             "-i", "pipe:0",
             "-af", filter_complex,
-            "-c:a", "libopus", "-b:a", "64k",
+            # This audio is fed straight into the converter, so it is an input
+            # to cloning rather than something a person listens to. Keep the
+            # bitrate high; detail lost here cannot be recovered downstream.
+            "-c:a", "libopus", "-b:a", "128k",
             "-f", "ogg", "pipe:1",
         ],
         input=audio_bytes,
