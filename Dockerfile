@@ -10,8 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY db.py .
 COPY s3.py .
 COPY audio_quality.py .
+COPY elevenlabs_ivc.py .
 COPY elevenlabs_pvc.py .
 COPY pitch.py .
+COPY seed_default_voices.py .
 COPY bot.py .
 
 CMD ["python", "bot.py"]
