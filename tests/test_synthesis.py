@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 try:
     import bot
@@ -86,6 +86,75 @@ class SynthesisTests(unittest.TestCase):
         request = client.speech_to_speech.request
         self.assertTrue(request["remove_background_noise"])
         self.assertEqual(request["output_format"], "mp3_44100_192")
+
+    def test_tts_asks_for_the_highest_mp3_bitrate(self):
+        client = _Client()
+        with patch.object(bot, "_get_elevenlabs", return_value=client):
+            bot.text_to_speech("שלום", "authorized-voice")
+
+        self.assertEqual(client.text_to_speech.request["output_format"], "mp3_44100_192")
+
+
+@unittest.skipIf(bot is None, "Project dependencies are not installed on the host.")
+class RecordingRouteTests(unittest.IsolatedAsyncioTestCase):
+    """The converter has no Hebrew, so Hebrew recordings must not go through it."""
+
+    VOICE = {"id": "voice-doc", "elevenlabs_voice_id": "voice-id", "name": "Creator"}
+
+    def setUp(self):
+        self.settings_patch = patch.object(
+            bot, "get_voice_settings", AsyncMock(return_value={"stability": 0.5}))
+        self.settings_patch.start()
+        self.addCleanup(self.settings_patch.stop)
+
+    async def test_hebrew_recording_is_transcribed_and_re_spoken(self):
+        with (
+            patch.object(bot, "text_to_speech", return_value=b"tts") as tts,
+            patch.object(bot, "speech_to_speech") as sts,
+        ):
+            audio, model = await bot.convert_recording_to_voice(
+                1, b"recording", self.VOICE,
+                {"language": "he", "speed": 1.0},
+                transcription="היי מותק",
+            )
+
+        self.assertEqual((audio, model), (b"tts", bot.TTS_MODEL))
+        sts.assert_not_called()
+        self.assertEqual(tts.call_args.args[0], "היי מותק")
+
+    async def test_supported_language_still_uses_voice_conversion(self):
+        with (
+            patch.object(bot, "text_to_speech") as tts,
+            patch.object(bot, "speech_to_speech", return_value=b"sts") as sts,
+            patch.object(bot, "maybe_pitch_match", AsyncMock(return_value=b"recording")),
+        ):
+            audio, model = await bot.convert_recording_to_voice(
+                1, b"recording", self.VOICE,
+                {"language": "en", "speed": 1.0},
+                transcription="hey sweetie",
+            )
+
+        self.assertEqual((audio, model), (b"sts", bot.STS_MODEL))
+        tts.assert_not_called()
+        sts.assert_called_once()
+
+    async def test_hebrew_falls_back_to_conversion_when_transcription_is_empty(self):
+        with (
+            patch.object(bot, "transcribe", return_value="  "),
+            patch.object(bot, "text_to_speech") as tts,
+            patch.object(bot, "speech_to_speech", return_value=b"sts") as sts,
+            patch.object(bot, "maybe_pitch_match", AsyncMock(return_value=b"recording")),
+        ):
+            audio, model = await bot.convert_recording_to_voice(
+                1, b"recording", self.VOICE, {"language": "he", "speed": 1.0},
+            )
+
+        self.assertEqual((audio, model), (b"sts", bot.STS_MODEL))
+        tts.assert_not_called()
+        sts.assert_called_once()
+
+    def test_hebrew_is_absent_from_every_converter_language(self):
+        self.assertNotIn("he", bot.STS_LANGUAGES)
 
 
 if __name__ == "__main__":

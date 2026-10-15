@@ -34,18 +34,15 @@ class _Database:
         self.system_voices = _Collection()
 
 
-class _ClonedVoice:
-    voice_id = "cloned-voice-id"
+class _RecordingClone:
+    """Stands in for the HTTP clone call and remembers what it was handed."""
 
+    def __init__(self):
+        self.calls = []
 
-class _IVC:
-    def create(self, **kwargs):
-        return _ClonedVoice()
-
-
-class _ElevenLabs:
-    def __init__(self, api_key):
-        self.voices = SimpleNamespace(ivc=_IVC())
+    def __call__(self, name, audio_files, remove_background_noise=True):
+        self.calls.append((name, audio_files, remove_background_noise))
+        return "cloned-voice-id"
 
 
 @unittest.skipIf(api is None, "Project dependencies are not installed on the host.")
@@ -79,11 +76,12 @@ class AdminVoiceWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clone_voice_does_not_require_consent_data(self):
         upload = api.UploadFile(filename="reference.mp3", file=io.BytesIO(b"reference audio"))
+        clone = _RecordingClone()
 
         with (
             patch.dict(os.environ, {"ELEVENLABS_API_KEY": "test-key"}),
             patch.object(api, "validate_reference_audio"),
-            patch.object(api, "ElevenLabs", _ElevenLabs),
+            patch.object(api.elevenlabs_ivc, "create_ivc_voice", clone),
         ):
             voice = await api.clone_voice_from_files(
                 name="Cloned Creator",
@@ -99,6 +97,9 @@ class AdminVoiceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 "elevenlabs_voice_id": "cloned-voice-id",
             },
         )
+        # The reference audio must reach the clone call as raw bytes.
+        self.assertEqual(clone.calls[0][0], "Cloned Creator")
+        self.assertEqual(clone.calls[0][1], [b"reference audio"])
 
 
 @unittest.skipIf(bot is None, "Project dependencies are not installed on the host.")

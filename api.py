@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 import os
 import secrets
@@ -7,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from elevenlabs.client import ElevenLabs
 from fastapi import FastAPI, File, Form, HTTPException, Header, UploadFile
 from pydantic import BaseModel
 
+import elevenlabs_ivc
 from audio_quality import ReferenceAudioError, validate_reference_audio
 from db import get_db
 from s3 import _get_client as get_s3_client
@@ -188,7 +187,7 @@ async def clone_voice_from_files(
     if not api_key:
         raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not configured")
 
-    audio_buffers = []
+    audio_samples = []
     for f in files:
         data = await f.read()
         if not data:
@@ -198,25 +197,19 @@ async def clone_voice_from_files(
         except ReferenceAudioError as error:
             raise HTTPException(
                 status_code=400,
-                detail=f"Reference {f.filename or len(audio_buffers) + 1} is unsuitable: {error}",
+                detail=f"Reference {f.filename or len(audio_samples) + 1} is unsuitable: {error}",
             ) from error
-        buf = io.BytesIO(data)
-        buf.name = f.filename or f"sample_{len(audio_buffers)}.mp3"
-        audio_buffers.append(buf)
+        audio_samples.append(data)
 
-    if not audio_buffers:
+    if not audio_samples:
         raise HTTPException(status_code=400, detail="All uploaded files were empty")
 
-    logger.info("Cloning voice '%s' from %d validated files", name, len(audio_buffers))
+    logger.info("Cloning voice '%s' from %d validated files", name, len(audio_samples))
 
     try:
-        client = ElevenLabs(api_key=api_key)
-        voice = client.voices.ivc.create(
-            name=name,
-            files=audio_buffers,
-            remove_background_noise=True,
+        elevenlabs_voice_id = await asyncio.to_thread(
+            elevenlabs_ivc.create_ivc_voice, name, audio_samples, True,
         )
-        elevenlabs_voice_id = voice.voice_id
         logger.info("IVC clone created: %s", name)
     except Exception:
         logger.exception("IVC clone failed")

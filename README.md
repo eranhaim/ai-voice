@@ -17,6 +17,22 @@ A Telegram bot that generates Hebrew speech and converts source audio with Eleve
 Text and dialogue generation use ElevenLabs `eleven_v4`. V4 is a speech-synthesis
 model, not a voice-enrollment API.
 
+### How a recording becomes the target voice
+
+Neither of ElevenLabs' voice-conversion models supports Hebrew — `/v1/models`
+lists 29 languages for `eleven_multilingual_sts_v2` and Hebrew is not among them.
+Hebrew pushed through it returns with substituted phonemes, which is why converted
+recordings sounded much worse than typing the same words. So:
+
+- **Language the converter supports** (`STS_LANGUAGES` in `bot.py`) — true voice
+  conversion, which keeps the speaker's own delivery.
+- **Any other language, Hebrew included** — the recording is transcribed and
+  re-spoken with `eleven_v4`, which does speak Hebrew. The speaker's intonation is
+  lost; the words come out correct. The user's style tag is applied to compensate.
+
+Refresh `STS_LANGUAGES` from `/v1/models` if ElevenLabs adds languages to the
+converter; Hebrew appearing there would make conversion the better route again.
+
 New reference audio is validated before enrollment and is not retained by this application
 or uploaded to S3. Never commit or log source audio, API keys, or voice data.
 
@@ -108,10 +124,18 @@ docker compose ps
 | `ELEVENLABS_API_KEY` | API key from elevenlabs.io |
 | `ELEVENLABS_MODEL` | `eleven_v4` for text and dialogue synthesis |
 
-### Available Free-Tier Voices
+### Default voices
 
-| Name | Voice ID | Style |
-|------|----------|-------|
-| Charlotte | `XB0fDUnXU5powFXDhCwa` | Seductive, young female |
-| Rachel | `21m00Tcm4TlvDq8ikWAM` | Calm, warm female |
-| Alice | `Xb7hH8MSUJpSbSDYk0k2` | Confident, British female |
+`/voices` lists the creator voices an operator added, then the user's own clones,
+then a separated block of shared default voices.
+
+The defaults come from `seed_default_voices.py`: 11 ElevenLabs Voice Library
+voices whose own speaker is Hebrew-speaking, so they do not read Hebrew with an
+American accent the way the English premades do. Install or refresh them with:
+
+```bash
+docker compose exec bot python seed_default_voices.py
+```
+
+The script is idempotent and marks each voice `is_default`, which is what keeps
+them visually separate from creator voices in `/voices`.

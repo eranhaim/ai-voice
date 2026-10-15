@@ -51,6 +51,12 @@ def get_db():
 
 
 async def get_system_voices() -> list[dict]:
+    """Shared voices, the account's own first and the seeded defaults last.
+
+    `is_default` marks the Hebrew voices from ElevenLabs' library that
+    seed_default_voices.py installs, so the bot can list them apart from the
+    creator voices an operator added by hand.
+    """
     db = get_db()
     voices = []
     async for doc in db.system_voices.find():
@@ -58,7 +64,9 @@ async def get_system_voices() -> list[dict]:
             "id": str(doc["_id"]),
             "name": doc["name"],
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
+            "is_default": bool(doc.get("is_default")),
         })
+    voices.sort(key=lambda v: v["is_default"])
     return voices
 
 

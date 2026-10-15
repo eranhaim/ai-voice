@@ -67,6 +67,7 @@ from db import (
 )
 from audio_quality import ReferenceAudioError, validate_reference_audio
 from s3 import upload_run_audio, delete_samples
+import elevenlabs_ivc
 import elevenlabs_pvc
 import pitch
 
@@ -84,6 +85,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 TTS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_v4")
 STS_MODEL = "eleven_multilingual_sts_v2"
+
+# Languages eleven_multilingual_sts_v2 is trained on, mirrored from
+# GET /v1/models. Hebrew is absent, and it is absent from the only other
+# converter (eleven_english_sts_v2) too, so there is no Hebrew voice-conversion
+# model to switch to. A Hebrew recording pushed through the converter comes back
+# with substituted phonemes -- "חיכיתי" returns as "שיקיטי" -- which is why
+# converted recordings sounded far worse than ElevenLabs' own Hebrew output.
+# eleven_v4 does speak Hebrew, so recordings in a language the converter cannot
+# model are transcribed and re-spoken instead. Refresh this set from /v1/models
+# if ElevenLabs ever adds languages to the converter.
+STS_LANGUAGES = frozenset({
+    "ar", "bg", "cs", "da", "de", "el", "en", "es", "fi", "fil", "fr", "hi",
+    "hr", "id", "it", "ja", "ko", "ms", "nl", "pl", "pt", "ro", "ru", "sk",
+    "sv", "ta", "tr", "uk", "zh",
+})
 
 DEFAULT_AUDIO_TAG = "[flirty, speaking to a man]"
 MIN_SAMPLE_DURATION = 5
@@ -226,7 +242,7 @@ def text_to_speech(
         text=tagged_text,
         voice_id=voice_id,
         model_id=TTS_MODEL,
-        output_format="mp3_44100_128",
+        output_format="mp3_44100_192",
         language_code=language,
         voice_settings=settings,
     ))
@@ -256,14 +272,14 @@ def speech_to_speech(
     ))
 
 
-def transcribe(audio_bytes: bytes) -> str:
+def transcribe(audio_bytes: bytes, language: str = "he") -> str:
     client = _get_openai()
     audio_file = BytesIO(audio_bytes)
     audio_file.name = "voice.ogg"
     result = client.audio.transcriptions.create(
         model="whisper-1",
         file=audio_file,
-        language="he",
+        language=language,
     )
     return result.text
 
@@ -346,18 +362,9 @@ def add_nikud(text: str) -> str:
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
-    client = _get_elevenlabs()
-    files = []
-    for i, data in enumerate(audio_files):
-        buf = BytesIO(data)
-        buf.name = f"sample_{i}.ogg"
-        files.append(buf)
-    voice = client.voices.ivc.create(
-        name=name,
-        files=files,
-        remove_background_noise=True,
+    return elevenlabs_ivc.create_ivc_voice(
+        name, audio_files, remove_background_noise=True,
     )
-    return voice.voice_id
 
 
 def delete_elevenlabs_voice(voice_id: str) -> None:
@@ -616,6 +623,61 @@ async def maybe_pitch_match(
         return audio_bytes
 
 
+# ── Turning a recording into the target voice ───────────────────────────────
+
+async def convert_recording_to_voice(
+    user_id: int,
+    audio_bytes: bytes,
+    voice: dict,
+    settings: dict,
+    audio_tag: str = "",
+    transcription: str = "",
+) -> tuple[bytes, str]:
+    """Re-speak `audio_bytes` in `voice`. Returns the audio and the model used.
+
+    Voice conversion is preferred because it keeps the speaker's own delivery,
+    but only for a language the converter actually models (see STS_LANGUAGES).
+    For Hebrew it does not, so the recording is transcribed and re-spoken with
+    eleven_v4. That loses the speaker's intonation and gains correct Hebrew;
+    the user's style tag is applied to put some delivery back.
+    """
+    elevenlabs_voice_id = voice["elevenlabs_voice_id"]
+    language = settings["language"]
+
+    text = ""
+    if language not in STS_LANGUAGES:
+        text = (transcription or await asyncio.to_thread(
+            transcribe, audio_bytes, language
+        )).strip()
+        if not text:
+            logger.warning(
+                "No transcription for a '%s' recording; converting it directly "
+                "even though %s is outside the converter's languages",
+                language, language,
+            )
+
+    if text:
+        tts_settings = await get_voice_settings(user_id, voice["id"], modality="tts")
+        logger.info(
+            "Re-speaking the recording with %s; the converter has no '%s'",
+            TTS_MODEL, language,
+        )
+        audio = text_to_speech(
+            text,
+            elevenlabs_voice_id,
+            audio_tag,
+            settings["speed"],
+            language,
+            voice_settings=tts_settings,
+        )
+        return audio, TTS_MODEL
+
+    sts_settings = await get_voice_settings(user_id, voice["id"], modality="sts")
+    sts_input = await maybe_pitch_match(user_id, audio_bytes, elevenlabs_voice_id)
+    audio = speech_to_speech(sts_input, elevenlabs_voice_id, voice_settings=sts_settings)
+    return audio, STS_MODEL
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -714,8 +776,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     voice_id = active["elevenlabs_voice_id"]
     vname = active["name"]
-    voice_settings_override = await get_voice_settings(user_id, active["id"], modality="sts")
     effect = await get_user_effect(user_id)
+    settings = await get_user_settings(user_id)
+    audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
     logger.info("STS from %d with voice %s: duration=%ss", user_id, voice_id, voice.duration)
     await update.message.reply_chat_action("record_voice")
 
@@ -733,18 +796,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         transcription = ""
         try:
-            transcription = transcribe(audio_bytes)
+            transcription = transcribe(audio_bytes, settings["language"])
             logger.info("Transcription: %s", transcription[:100])
         except Exception:
             logger.exception("Transcription failed, continuing with voice conversion")
 
-        sts_input = await maybe_pitch_match(user_id, audio_bytes, voice_id)
-        converted = speech_to_speech(sts_input, voice_id, voice_settings=voice_settings_override)
+        converted, model = await convert_recording_to_voice(
+            user_id, audio_bytes, active, settings, audio_tag, transcription,
+        )
         ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
         await update.message.reply_voice(voice=ogg_data)
-        await log_run(user_id, "sts", transcription, vname, input_audio_url, model=STS_MODEL)
+        await log_run(user_id, "sts", transcription, vname, input_audio_url, model=model)
     except Exception:
         logger.exception("STS failed")
         await update.message.reply_text("משהו השתבש. נסה/י שוב.")
@@ -798,20 +862,27 @@ async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         system_voices = await get_system_voices()
         custom_voices = await get_user_voices(user_id, kind=VOICE_KIND_IVC)
-        for sv in system_voices:
-            is_active = sv["elevenlabs_voice_id"] == current_voice_id
-            label = (">> " if is_active else "") + sv["name"]
+        creator_voices = [sv for sv in system_voices if not sv["is_default"]]
+        default_voices = [sv for sv in system_voices if sv["is_default"]]
+
+        def add_row(voice: dict) -> None:
+            is_active = voice["elevenlabs_voice_id"] == current_voice_id
+            label = (">> " if is_active else "") + voice["name"]
             buttons.append([
-                InlineKeyboardButton(label, callback_data=f"voice_select:{sv['id']}"),
-                InlineKeyboardButton("🎛", callback_data=f"voice_tune:{sv['id']}"),
+                InlineKeyboardButton(label, callback_data=f"voice_select:{voice['id']}"),
+                InlineKeyboardButton("🎛", callback_data=f"voice_tune:{voice['id']}"),
             ])
+
+        for sv in creator_voices:
+            add_row(sv)
         for v in custom_voices:
-            is_active = v["elevenlabs_voice_id"] == current_voice_id
-            label = (">> " if is_active else "") + v["name"]
-            buttons.append([
-                InlineKeyboardButton(label, callback_data=f"voice_select:{v['id']}"),
-                InlineKeyboardButton("🎛", callback_data=f"voice_tune:{v['id']}"),
-            ])
+            add_row(v)
+        if default_voices:
+            buttons.append([InlineKeyboardButton(
+                "— קולות ברירת מחדל —", callback_data="voice_tune_noop",
+            )])
+            for sv in default_voices:
+                add_row(sv)
         header = "בחר/י קול פעיל:\n(>> מסמן את הנוכחי, 🎛 לכוונון)"
 
     await update.message.reply_text(
@@ -1617,14 +1688,17 @@ async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(f"ממיר {len(turns)} הקלטות... זה עלול לקחת רגע.")
     await update.message.reply_chat_action("record_voice")
 
+    settings = await get_user_settings(user_id)
+    audio_tag = await get_user_prompt(user_id) or DEFAULT_AUDIO_TAG
+
     try:
         converted_clips = []
+        model = STS_MODEL
         for turn in turns:
             picked = voices[turn["voice_idx"]]
-            voice_id = picked["elevenlabs_voice_id"]
-            override = await get_voice_settings(user_id, picked["id"], modality="sts")
-            sts_input = await maybe_pitch_match(user_id, turn["audio"], voice_id)
-            converted = speech_to_speech(sts_input, voice_id, voice_settings=override)
+            converted, model = await convert_recording_to_voice(
+                user_id, turn["audio"], picked, settings, audio_tag,
+            )
             converted_clips.append(converted)
 
         stitched = stitch_audio_clips(converted_clips)
@@ -1634,7 +1708,7 @@ async def handle_dialogue_sts_done(update: Update, context: ContextTypes.DEFAULT
 
         await update.message.reply_voice(voice=ogg_data)
         voice_names = ", ".join(voices[t["voice_idx"]]["name"] for t in turns)
-        await log_run(user_id, "dialogue_sts", f"{len(turns)} turns", voice_names, model=STS_MODEL)
+        await log_run(user_id, "dialogue_sts", f"{len(turns)} turns", voice_names, model=model)
     except Exception:
         logger.exception("STS Dialogue failed")
         await update.message.reply_text("יצירת השיחה נכשלה. נסה/י שוב.")
