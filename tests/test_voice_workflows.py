@@ -138,5 +138,41 @@ class ExistingVoiceGenerationTests(unittest.IsolatedAsyncioTestCase):
         message.reply_text.assert_not_awaited()
 
 
+@unittest.skipIf(api is None, "Project dependencies are not installed on the host.")
+class OfferedSystemVoiceTests(unittest.TestCase):
+    def test_library_defaults_and_tests_are_not_offered(self):
+        from db import is_offered_system_voice
+
+        self.assertFalse(is_offered_system_voice({
+            "name": "מאיה — צעירה, עליזה",
+            "is_default": True,
+            "elevenlabs_voice_id": "UZzDIQRRTW2Id7YBcbgC",
+        }))
+        self.assertFalse(is_offered_system_voice({
+            "name": "אדל לבדיקות",
+            "elevenlabs_voice_id": "KxNpWJUtFokUnevDJKqN",
+        }))
+        self.assertFalse(is_offered_system_voice({
+            "name": "הקול המפתה של נופר",
+            "elevenlabs_voice_id": "jqcCZkN6Knx8BJ5TBdYR",
+        }))
+        self.assertFalse(is_offered_system_voice({
+            "name": "הישראלית (ברירת מחדל)",
+            "elevenlabs_voice_id": "vBMgTnSCwGQgPmJVsUxe",
+        }))
+
+    def test_representative_clones_stay_offered(self):
+        from db import is_offered_system_voice
+
+        self.assertTrue(is_offered_system_voice({
+            "name": "קול מעולה של הדר",
+            "elevenlabs_voice_id": "TB3xQ1vvidkd02NNu76O",
+        }))
+        self.assertTrue(is_offered_system_voice({
+            "name": "קול מעולה של אישה",
+            "elevenlabs_voice_id": "L6MkgvVoFggyQz4tmakR",
+        }))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -49,24 +49,56 @@ def get_db():
 
 # ── System voices ─────────────────────────────────────────────────────────────
 
+# ElevenLabs library voices that were added to the shared catalog under Hebrew
+# labels. Their category on 2026-10-25 was professional, premade, or generated,
+# not a clone of a representative. The rows stay in `system_voices`. The bot
+# does not offer them. Nothing here is deleted from ElevenLabs.
+_LIBRARY_SYSTEM_VOICE_IDS = frozenset({
+    "jqcCZkN6Knx8BJ5TBdYR",  # labeled נופר; the library voice is Zara
+    "K8lgMMdmFr7QoEooafEf",  # labeled רומי; the library voice is Claudia
+    "kdmDKE6EkgrWrrykO9Qt",  # Alexandra
+    "21m00Tcm4TlvDq8ikWAM",  # labeled Rachel; the library voice is Janet
+    "EXAVITQu4vr4xnSDxMaL",  # labeled Bella; the library voice is Sarah
+    "g6xIsTj2HwM6VR4iXFCw",  # Jessica
+    "dj3G1R1ilKoFKhBnWOzG",  # Eryn
+    "vBMgTnSCwGQgPmJVsUxe",  # הישראלית, a generated default
+})
+
+
+def is_offered_system_voice(voice: dict) -> bool:
+    """Whether /voices may offer this shared catalog entry.
+
+    Representative clones stay. Seeded defaults, library voices, and entries
+    named as tests do not. A test name on a shared row does not hide the same
+    ElevenLabs voice when a representative's own account also has it.
+    """
+    if voice.get("is_default"):
+        return False
+    name = voice.get("name") or ""
+    if "לבדיקות" in name or "ברירת מחדל" in name:
+        return False
+    if voice.get("elevenlabs_voice_id") in _LIBRARY_SYSTEM_VOICE_IDS:
+        return False
+    return True
+
 
 async def get_system_voices() -> list[dict]:
-    """Shared voices, the account's own first and the seeded defaults last.
+    """Shared voices the bot may offer.
 
-    `is_default` marks the Hebrew voices from ElevenLabs' library that
-    seed_default_voices.py installs, so the bot can list them apart from the
-    creator voices an operator added by hand.
+    Library defaults and test entries remain stored and are skipped here.
     """
     db = get_db()
     voices = []
     async for doc in db.system_voices.find():
+        if not is_offered_system_voice(doc):
+            continue
         voices.append({
             "id": str(doc["_id"]),
             "name": doc["name"],
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
             "is_default": bool(doc.get("is_default")),
         })
-    voices.sort(key=lambda v: v["is_default"])
+    voices.sort(key=lambda v: v["name"])
     return voices
 
 
@@ -366,6 +398,11 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
     oid = ObjectId(voice_doc_id)
     doc = await db.system_voices.find_one({"_id": oid})
     if doc:
+        # A stored library or test voice can still be someone's active id.
+        # Treating it as missing makes /voices and generation ask for a voice
+        # the bot actually offers. The document is not deleted.
+        if not is_offered_system_voice(doc):
+            return None
         return {
             "id": str(doc["_id"]),
             "telegram_id": None,
