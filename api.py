@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import secrets
 import zipfile
@@ -16,6 +17,10 @@ from db import get_db
 from s3 import _get_client as get_s3_client
 
 load_dotenv()
+
+# Avoid logging HTTP request URLs: Telegram embeds the bot token in its API URL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "5060049285")
