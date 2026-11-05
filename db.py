@@ -9,19 +9,6 @@ _client: AsyncIOMotorClient | None = None
 DEFAULT_VOICE_ID = "jqcCZkN6Knx8BJ5TBdYR"
 PLAYAI_DEFAULT_VOICE_ID = os.getenv("PLAYAI_DEFAULT_VOICE_ID", "")
 
-# User-level mode constants. "casual" uses IVC clones; "premium" uses PVC clones.
-MODE_CASUAL = "casual"
-MODE_PREMIUM = "premium"
-
-# Voice-level clone-tier constants.
-VOICE_KIND_IVC = "ivc"
-VOICE_KIND_PVC = "pvc"
-
-
-def voice_kind_for_mode(mode: str) -> str:
-    return VOICE_KIND_PVC if mode == MODE_PREMIUM else VOICE_KIND_IVC
-
-
 # Per-voice settings the user can tune from the bot. Defaults match the values
 # the bot used before this feature shipped, so behaviour for un-tuned voices
 # is unchanged. STS historically used stability=0.5 (vs TTS 0.6); we keep that
@@ -77,24 +64,6 @@ async def is_authorized(telegram_id: int) -> bool:
     db = get_db()
     user = await db.users.find_one({"telegram_id": telegram_id})
     return user is not None
-
-
-async def get_user_mode(telegram_id: int) -> str:
-    db = get_db()
-    user = await db.users.find_one({"telegram_id": telegram_id})
-    if not user:
-        return MODE_CASUAL
-    return user.get("mode") or MODE_CASUAL
-
-
-async def set_user_mode(telegram_id: int, mode: str) -> None:
-    if mode not in (MODE_CASUAL, MODE_PREMIUM):
-        raise ValueError(f"invalid mode: {mode}")
-    db = get_db()
-    await db.users.update_one(
-        {"telegram_id": telegram_id},
-        {"$set": {"mode": mode}},
-    )
 
 
 # ── Pitch match (STS source-to-target pitch normalization) ────────────────────
@@ -371,8 +340,6 @@ async def create_voice(
     name: str,
     elevenlabs_voice_id: str,
     sample_urls: list[str],
-    kind: str = VOICE_KIND_IVC,
-    training_status: str = "ready",
     playai_voice_id: str | None = None,
 ) -> str:
     db = get_db()
@@ -381,10 +348,6 @@ async def create_voice(
         "name": name,
         "elevenlabs_voice_id": elevenlabs_voice_id,
         "sample_urls": sample_urls,
-        "kind": kind,
-        "training_status": training_status,
-        # legacy IVC voices are considered already-notified so they never trigger a DM
-        "training_notified": training_status == "ready",
         "created_at": datetime.now(timezone.utc),
     }
     if playai_voice_id:
@@ -401,22 +364,17 @@ def _voice_to_dict(doc: dict) -> dict:
         "elevenlabs_voice_id": doc.get("elevenlabs_voice_id", ""),
         "playai_voice_id": playai_voice_id_from_doc(doc),
         "sample_urls": doc.get("sample_urls", []),
-        "kind": doc.get("kind", VOICE_KIND_IVC),
-        "training_status": doc.get("training_status", "ready"),
-        "training_notified": doc.get("training_notified", True),
         "created_at": doc.get("created_at"),
     }
 
 
-async def get_user_voices(telegram_id: int, kind: str | None = None) -> list[dict]:
+async def get_user_voices(telegram_id: int) -> list[dict]:
     db = get_db()
-    query: dict = {"telegram_id": telegram_id}
-    if kind is not None:
-        # default-IVC voices may not have the `kind` field set yet, treat them as IVC.
-        if kind == VOICE_KIND_IVC:
-            query["$or"] = [{"kind": VOICE_KIND_IVC}, {"kind": {"$exists": False}}]
-        else:
-            query["kind"] = kind
+    # Preserve legacy non-IVC records without presenting them in the bot.
+    query: dict = {
+        "telegram_id": telegram_id,
+        "$or": [{"kind": "ivc"}, {"kind": {"$exists": False}}],
+    }
     voices = []
     async for doc in db.voices.find(query).sort("created_at", -1):
         voices.append(_voice_to_dict(doc))
@@ -435,9 +393,6 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
             "elevenlabs_voice_id": doc["elevenlabs_voice_id"],
             "playai_voice_id": playai_voice_id_from_doc(doc),
             "sample_urls": [],
-            "kind": VOICE_KIND_IVC,
-            "training_status": "ready",
-            "training_notified": True,
         }
     doc = await db.voices.find_one({"_id": oid})
     if not doc:
@@ -452,57 +407,6 @@ async def get_active_voice_doc(telegram_id: int) -> dict | None:
     if not user or not user.get("active_voice_id"):
         return None
     return await get_voice_by_id(str(user["active_voice_id"]))
-
-
-async def set_voice_training_status(
-    voice_doc_id: str,
-    status: str,
-    **extra_fields,
-) -> None:
-    db = get_db()
-    update: dict = {"training_status": status, **extra_fields}
-    # When a voice becomes ready we leave training_notified=False so the polling
-    # job can DM the user. Any non-ready transition clears the notify flag too
-    # so e.g. retraining a failed voice will re-notify on success.
-    if status == "ready":
-        update["training_notified"] = False
-    await db.voices.update_one(
-        {"_id": ObjectId(voice_doc_id)},
-        {"$set": update},
-    )
-
-
-async def find_pvc_voices_in_progress() -> list[dict]:
-    """Return PVC voices that still need their status polled from ElevenLabs."""
-    db = get_db()
-    voices = []
-    async for doc in db.voices.find({
-        "kind": VOICE_KIND_PVC,
-        "training_status": {"$in": ["training", "verifying"]},
-    }):
-        voices.append(_voice_to_dict(doc))
-    return voices
-
-
-async def find_unnotified_finished_voices() -> list[dict]:
-    """Return PVC voices whose owners should be DM'd that the voice is ready/failed."""
-    db = get_db()
-    voices = []
-    async for doc in db.voices.find({
-        "kind": VOICE_KIND_PVC,
-        "training_status": {"$in": ["ready", "failed"]},
-        "training_notified": {"$ne": True},
-    }):
-        voices.append(_voice_to_dict(doc))
-    return voices
-
-
-async def mark_voice_notified(voice_doc_id: str) -> None:
-    db = get_db()
-    await db.voices.update_one(
-        {"_id": ObjectId(voice_doc_id)},
-        {"$set": {"training_notified": True}},
-    )
 
 
 async def delete_voice(voice_doc_id: str) -> dict | None:
