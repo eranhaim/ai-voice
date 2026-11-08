@@ -26,6 +26,25 @@ ELEVENLABS_API_BASE = "https://api.elevenlabs.io"
 CLONE_TIMEOUT_SECONDS = 300.0
 
 
+def _label_hebrew(voice_id: str, name: str, api_key: str) -> None:
+    """Tag the voice as Hebrew. /voices/add ignores `labels`; /edit applies them.
+
+    Best-effort: a labelling failure must never lose a finished clone.
+    """
+    try:
+        httpx.post(
+            f"{ELEVENLABS_API_BASE}/v1/voices/{voice_id}/edit",
+            headers={"xi-api-key": api_key},
+            data={
+                "name": name,
+                "labels": json.dumps({"language": "he", "accent": "israeli"}),
+            },
+            timeout=30.0,
+        ).raise_for_status()
+    except Exception:
+        logger.exception("Could not label voice %s as Hebrew", voice_id)
+
+
 def create_ivc_voice(
     name: str,
     audio_files: list[bytes],
