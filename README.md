@@ -29,60 +29,57 @@ python bot.py
 
 ---
 
-## Deploy to EC2
+## Deploy to Vultr
 
-### 1. SSH into the Instance
+The app runs on a Vultr VPS (Tel Aviv, `64.176.175.97`) in `/home/deploy/projects/ai-voice`.
+Caddy terminates TLS and proxies to the admin panel on `127.0.0.1:8086`
+(`docker-compose.vultr.yml` overrides the web port). The server is shared with other
+projects, so only ever touch the `ai-voice-*` containers.
 
-From your local machine (Windows):
-
-```powershell
-ssh -i key.pem ubuntu@54.173.144.0
-```
-
-### 2. Copy the Project to EC2
-
-From your local machine, open a second terminal:
+### 1. SSH in
 
 ```powershell
-scp -i key.pem -r "C:\Users\Eran\Desktop\AI OF voice" ubuntu@54.173.144.0:~/voice-bot
+ssh -i key root@64.176.175.97
 ```
 
-### 3. Create the `.env` File on EC2
+`key` is the private SSH key (git-ignored; never commit it).
+
+### 2. Update the code
 
 ```bash
-cd ~/voice-bot
-
-cat > .env << 'EOF'
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-ELEVENLABS_API_KEY=your_elevenlabs_api_key
-ELEVENLABS_VOICE_ID=XB0fDUnXU5powFXDhCwa
-EOF
+cd /home/deploy/projects/ai-voice
+git fetch origin
+git checkout <branch> && git pull
 ```
 
-Replace the values with your actual keys.
+### 3. Configure `.env` on the server
 
-### 4. Build and Run
+Copy `.env.example` to `.env` and fill in the values. Voice-sample and run-audio
+storage uses Vultr Object Storage (S3-compatible):
 
-```bash
-docker compose up -d --build
+```
+S3_ENDPOINT_URL=https://ams1.vultrobjects.com
+AWS_ACCESS_KEY_ID=<object storage access key>
+AWS_SECRET_ACCESS_KEY=<object storage secret key>
+AWS_S3_BUCKET=voice-ai-bucket
+AWS_REGION=us-east-1
 ```
 
-That's it — the bot is running.
+Leave `S3_ENDPOINT_URL` empty to use AWS S3 instead. Sample backup is best-effort:
+if storage is unreachable, voice cloning still succeeds.
 
-### 5. Useful Commands
+### 4. Build and run
 
 ```bash
-# View live logs
-docker compose logs -f
+docker compose -f docker-compose.yml -f docker-compose.vultr.yml up -d --build
+```
 
-# Stop the bot
-docker compose down
+### 5. Useful commands
 
-# Rebuild after code changes
-docker compose up -d --build
-
-# Check status
-docker compose ps
+```bash
+docker compose logs -f bot     # live bot logs
+docker compose ps              # status
+docker compose down            # stop (this project only)
 ```
 
 ---

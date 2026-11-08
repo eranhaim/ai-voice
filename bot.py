@@ -1009,14 +1009,17 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_chat_action("typing")
 
     try:
-        sample_urls = []
-        for i, data in enumerate(samples):
-            filename = f"{uuid.uuid4().hex}.ogg"
-            url = upload_sample(user_id, filename, data)
-            sample_urls.append(url)
-
         elevenlabs_voice_id = clone_voice(name, samples)
         logger.info("Cloned voice %s -> %s", name, elevenlabs_voice_id)
+
+        # Sample backup is best-effort: a storage outage must not block cloning.
+        sample_urls = []
+        for data in samples:
+            try:
+                filename = f"{uuid.uuid4().hex}.ogg"
+                sample_urls.append(upload_sample(user_id, filename, data))
+            except Exception:
+                logger.exception("Sample backup to object storage failed; voice kept")
 
         voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
         await set_active_voice(user_id, voice_doc_id)
