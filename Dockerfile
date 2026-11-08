@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY db.py .
 COPY s3.py .
+COPY elevenlabs_ivc.py .
 COPY elevenlabs_pvc.py .
 COPY playai_tts.py .
 COPY pitch.py .

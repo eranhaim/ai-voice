@@ -70,6 +70,7 @@ from db import (
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
 import elevenlabs_pvc
+import elevenlabs_ivc
 import playai_tts
 import pitch
 
@@ -357,18 +358,9 @@ def add_nikud(text: str) -> str:
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
-    client = _get_elevenlabs()
-    files = []
-    for i, data in enumerate(audio_files):
-        buf = BytesIO(data)
-        buf.name = f"sample_{i}.ogg"
-        files.append(buf)
-    voice = client.voices.ivc.create(
-        name=name,
-        files=files,
-        remove_background_noise=True,
-    )
-    return voice.voice_id
+    # SDK voices.ivc.create() is rejected by the API ("invalid_labels"); call the
+    # endpoint directly. See elevenlabs_ivc.py.
+    return elevenlabs_ivc.create_ivc_voice(name, audio_files, remove_background_noise=True)
 
 
 def delete_elevenlabs_voice(voice_id: str) -> None:
@@ -1183,14 +1175,17 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_chat_action("typing")
 
     try:
-        sample_urls = []
-        for i, data in enumerate(samples):
-            filename = f"{uuid.uuid4().hex}.ogg"
-            url = upload_sample(user_id, filename, data)
-            sample_urls.append(url)
-
         elevenlabs_voice_id = clone_voice(name, samples)
         logger.info("Cloned voice %s -> %s", name, elevenlabs_voice_id)
+
+        # Sample backup is best-effort: a storage outage must not block cloning.
+        sample_urls = []
+        for data in samples:
+            try:
+                filename = f"{uuid.uuid4().hex}.ogg"
+                sample_urls.append(upload_sample(user_id, filename, data))
+            except Exception:
+                logger.exception("Sample backup to object storage failed; voice kept")
 
         voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
         await set_active_voice(user_id, voice_doc_id)
