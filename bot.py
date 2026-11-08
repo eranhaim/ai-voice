@@ -57,6 +57,7 @@ from db import (
     PLAYAI_DEFAULT_VOICE_ID,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
+import elevenlabs_ivc
 import playai_tts
 import pitch
 
@@ -344,18 +345,9 @@ def add_nikud(text: str) -> str:
 
 
 def clone_voice(name: str, audio_files: list[bytes]) -> str:
-    client = _get_elevenlabs()
-    files = []
-    for i, data in enumerate(audio_files):
-        buf = BytesIO(data)
-        buf.name = f"sample_{i}.ogg"
-        files.append(buf)
-    voice = client.voices.ivc.create(
-        name=name,
-        files=files,
-        remove_background_noise=True,
-    )
-    return voice.voice_id
+    # The SDK's voices.ivc.create() is rejected by the API ("invalid_labels"),
+    # so call the endpoint directly. See elevenlabs_ivc.py.
+    return elevenlabs_ivc.create_ivc_voice(name, audio_files, remove_background_noise=True)
 
 
 def delete_elevenlabs_voice(voice_id: str) -> None:
