@@ -48,3 +48,24 @@ def delete_samples(urls: list[str]) -> None:
         parts = url.replace("s3://", "").split("/", 1)
         if len(parts) == 2:
             client.delete_object(Bucket=parts[0], Key=parts[1])
+
+
+def _split(url: str) -> tuple[str, str]:
+    parts = url.replace("s3://", "").split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"invalid s3 url: {url}")
+    return parts[0], parts[1]
+
+
+def upload_object(key: str, data: bytes, content_type: str = "audio/mpeg") -> str:
+    bucket = os.getenv("AWS_S3_BUCKET")
+    _get_client().put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+    return f"s3://{bucket}/{key}"
+
+
+def presigned_url(url: str, expires: int = 3600) -> str:
+    """Short-lived public link to a stored object (for APIs that take audio URLs)."""
+    bucket, key = _split(url)
+    return _get_client().generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires,
+    )

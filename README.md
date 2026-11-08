@@ -14,6 +14,53 @@ A Telegram bot that converts text to speech (Hebrew female voice) and converts v
 
 PVC requires the ElevenLabs Creator tier or higher (each PVC slot eats into the account's professional-voice quota). The bot polls training status every 5 minutes via a JobQueue and DMs the owner when each Premium voice is ready.
 
+## Alternative voice engines
+
+ElevenLabs is the baseline. These engines run next to it so we can pick
+whichever sounds most natural in Hebrew:
+
+| Engine | Text → voice | Recording → voice | Needs |
+|--------|:---:|:---:|-------|
+| ElevenLabs | ✅ v3 | ✅ multilingual STS | `ELEVENLABS_API_KEY` |
+| MiniMax Speech 2.8 HD | ✅ (Hebrew `language_boost`) | — | `MINIMAX_API_KEY` |
+| ModelsLab | ✅ `text_to_audio` (hebrew) | ✅ `voice_to_voice` | `MODELSLAB_API_KEY` |
+| Applio (RVC) | ✅ MiniMax → Applio | ✅ trained per voice | Modal tokens |
+| Seed-VC | ✅ MiniMax → Seed-VC | ✅ zero-shot | Modal tokens |
+
+Bot commands:
+
+- `/compare`: toggles comparison mode. Every text or voice message comes back
+  once per engine, numbered, with the engine name and how long it took.
+- `/engines`: picks the engine used outside comparison mode.
+- `/prepare`: sets the active voice up for every engine. `/newvoice` does this
+  automatically.
+
+What `/newvoice` prepares, in the background, after the ElevenLabs clone:
+
+1. Stores a reference clip of up to 28 s in object storage. Seed-VC and ModelsLab
+   use it, and system voices fall back to the ElevenLabs preview.
+2. Creates a MiniMax clone. MiniMax deletes clones unused for 7 days, and the bot
+   re-clones automatically.
+3. Starts Applio training on Modal (about 20-40 min). The bot DMs you when it's
+   ready.
+
+Code: `engines/` holds the API clients, `voice_lab.py` holds the routing,
+preparation and comparison, and `gpu_service/voice_lab.py` is the Modal app
+for Applio and Seed-VC.
+
+### GPU service (Modal)
+
+```bash
+pip install modal
+modal token new                       # once; writes ~/.modal.toml
+modal deploy gpu_service/voice_lab.py # rebuild after changing it
+```
+
+Copy `token_id` / `token_secret` from `~/.modal.toml` into the bot's `.env` as
+`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`. GPUs (A10G) are billed per second, and
+nothing stays warm when idle. Expect a 30-90 s cold start on the first request.
+Tuning knobs are in `.env.example` (`APPLIO_*`, `SEEDVC_*`).
+
 ---
 
 ## Run Locally

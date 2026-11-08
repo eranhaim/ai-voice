@@ -393,6 +393,17 @@ async def create_voice(
     return str(result.inserted_id)
 
 
+def _engine_fields(doc: dict) -> dict:
+    """Per-voice state for the alternative engines (see engines/)."""
+    return {
+        "reference_audio_url": doc.get("reference_audio_url"),
+        "minimax_voice_id": doc.get("minimax_voice_id"),
+        "applio_status": doc.get("applio_status"),
+        "applio_error": doc.get("applio_error"),
+        "applio_notified": doc.get("applio_notified", True),
+    }
+
+
 def _voice_to_dict(doc: dict) -> dict:
     return {
         "id": str(doc["_id"]),
@@ -405,6 +416,7 @@ def _voice_to_dict(doc: dict) -> dict:
         "training_status": doc.get("training_status", "ready"),
         "training_notified": doc.get("training_notified", True),
         "created_at": doc.get("created_at"),
+        **_engine_fields(doc),
     }
 
 
@@ -438,6 +450,8 @@ async def get_voice_by_id(voice_doc_id: str) -> dict | None:
             "kind": VOICE_KIND_IVC,
             "training_status": "ready",
             "training_notified": True,
+            "is_system": True,
+            **_engine_fields(doc),
         }
     doc = await db.voices.find_one({"_id": oid})
     if not doc:
@@ -522,4 +536,71 @@ async def delete_voice(voice_doc_id: str) -> dict | None:
         "playai_voice_id": playai_voice_id_from_doc(doc),
         "sample_urls": doc.get("sample_urls", []),
         "kind": doc.get("kind", VOICE_KIND_IVC),
+        "minimax_voice_id": doc.get("minimax_voice_id"),
+        "reference_audio_url": doc.get("reference_audio_url"),
+        "applio_status": doc.get("applio_status"),
     }
+
+
+# ── Alternative engines (MiniMax, ModelsLab, Applio, Seed-VC) ────────────────
+
+async def set_voice_fields(voice_doc_id: str, **fields) -> None:
+    """Set engine fields on a custom or system voice."""
+    db = get_db()
+    try:
+        oid = ObjectId(voice_doc_id)
+    except Exception:
+        return  # the built-in default voice has no document to update
+    res = await db.voices.update_one({"_id": oid}, {"$set": fields})
+    if res.matched_count == 0:
+        await db.system_voices.update_one({"_id": oid}, {"$set": fields})
+
+
+async def find_applio_training_voices() -> list[dict]:
+    db = get_db()
+    voices = []
+    async for doc in db.voices.find({"applio_status": "training"}):
+        voices.append(_voice_to_dict(doc))
+    return voices
+
+
+async def find_unnotified_applio_voices() -> list[dict]:
+    db = get_db()
+    voices = []
+    async for doc in db.voices.find({
+        "applio_status": {"$in": ["ready", "failed"]},
+        "applio_notified": False,
+    }):
+        voices.append(_voice_to_dict(doc))
+    return voices
+
+
+async def get_user_engines(telegram_id: int) -> dict:
+    """{"tts": engine, "sts": engine, "compare": bool} with defaults."""
+    from engines import DEFAULT_TTS_ENGINE, DEFAULT_STS_ENGINE
+    db = get_db()
+    user = await db.users.find_one(
+        {"telegram_id": telegram_id}, {"tts_engine": 1, "sts_engine": 1, "compare_mode": 1},
+    ) or {}
+    return {
+        "tts": user.get("tts_engine") or DEFAULT_TTS_ENGINE,
+        "sts": user.get("sts_engine") or DEFAULT_STS_ENGINE,
+        "compare": bool(user.get("compare_mode", False)),
+    }
+
+
+async def set_user_engines(
+    telegram_id: int,
+    tts: str | None = None,
+    sts: str | None = None,
+    compare: bool | None = None,
+) -> None:
+    update: dict = {}
+    if tts is not None:
+        update["tts_engine"] = tts
+    if sts is not None:
+        update["sts_engine"] = sts
+    if compare is not None:
+        update["compare_mode"] = bool(compare)
+    if update:
+        await get_db().users.update_one({"telegram_id": telegram_id}, {"$set": update})

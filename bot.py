@@ -67,12 +67,19 @@ from db import (
     get_user_playai_voice_id,
     playai_voice_id_from_doc,
     PLAYAI_DEFAULT_VOICE_ID,
+    get_user_engines,
+    set_user_engines,
+    find_applio_training_voices,
+    find_unnotified_applio_voices,
+    set_voice_fields,
 )
 from s3 import upload_sample, upload_run_audio, delete_samples
 import elevenlabs_pvc
 import elevenlabs_ivc
 import playai_tts
 import pitch
+import voice_lab
+from engines import TTS_ENGINES, STS_ENGINES
 
 load_dotenv()
 
@@ -642,6 +649,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/dialogue — יצירת שיחה עם מספר קולות\n"
         "/effects — הוספת אפקט קולי ברקע\n"
         "/noeffects — הסרת אפקט הרקע\n"
+        "\nמנועים חלופיים:\n"
+        "/engines — בחירת מנוע (ElevenLabs, MiniMax, Applio, Seed-VC, ModelsLab)\n"
+        "/compare — מצב השוואה: כל הודעה חוזרת מכל המנועים\n"
+        "/prepare — הכנת הקול הפעיל לכל המנועים\n"
     )
 
 
@@ -682,6 +693,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.warning("Nikud unchanged for %d chars: %s", len(text), text[:120])
     except Exception:
         logger.exception("Nikud failed, using original text")
+
+    engines_pref = await get_user_engines(user_id)
+    voice = active or _default_voice(voice_id, vname)
+
+    def eleven_tts() -> bytes:
+        return text_to_speech(
+            text, voice_id, audio_tag, settings["speed"], settings["language"],
+            voice_settings=voice_settings_override,
+        )
+
+    if engines_pref["compare"]:
+        results = await voice_lab.compare_tts(
+            text, voice, settings, eleven_tts, _fetch_voice_preview_audio,
+        )
+        await _send_comparison(update, results, user_id, "tts", text, vname, effect)
+        return
+
+    if engines_pref["tts"] != "elevenlabs":
+        engine = engines_pref["tts"]
+        try:
+            audio_data = await voice_lab.synthesize(
+                engine, text, voice, settings, eleven_tts, _fetch_voice_preview_audio,
+            )
+            ogg_data = process_audio_with_effect(audio_data, effect)
+            await update.message.reply_voice(voice=ogg_data)
+            await log_run(user_id, "tts", text, vname, model=engine)
+        except voice_lab.EngineUnavailable as exc:
+            await update.message.reply_text(
+                f"{TTS_ENGINES[engine]} לא זמין: {exc}\nבחר/י מנוע אחר ב-/engines"
+            )
+        except Exception:
+            logger.exception("TTS via %s failed", engine)
+            await update.message.reply_text(
+                f"{TTS_ENGINES[engine]} נכשל. נסה/י שוב או בחר/י מנוע אחר ב-/engines"
+            )
+        return
 
     try:
         playai_voice_id = await resolve_playai_voice(active, user_id)
@@ -771,8 +818,41 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.exception("Transcription failed, continuing with voice conversion")
 
-        sts_input = await maybe_pitch_match(user_id, audio_bytes, voice_id)
-        converted = speech_to_speech(sts_input, voice_id, voice_settings=voice_settings_override)
+        engines_pref = await get_user_engines(user_id)
+        voice = active or _default_voice(voice_id, vname)
+        engine = engines_pref["sts"]
+        sts_input = audio_bytes
+        if engines_pref["compare"] or engine == "elevenlabs":
+            sts_input = await maybe_pitch_match(user_id, audio_bytes, voice_id)
+
+        def eleven_sts() -> bytes:
+            return speech_to_speech(sts_input, voice_id, voice_settings=voice_settings_override)
+
+        if engines_pref["compare"]:
+            results = await voice_lab.compare_sts(
+                audio_bytes, voice, eleven_sts, _fetch_voice_preview_audio,
+            )
+            await _send_comparison(
+                update, results, user_id, "sts", transcription, vname, effect, input_audio_url,
+            )
+            return
+
+        if engine != "elevenlabs":
+            try:
+                converted = await voice_lab.convert(
+                    engine, audio_bytes, voice, eleven_sts, _fetch_voice_preview_audio,
+                )
+            except voice_lab.EngineUnavailable as exc:
+                await update.message.reply_text(
+                    f"{STS_ENGINES[engine]} לא זמין: {exc}\nבחר/י מנוע אחר ב-/engines"
+                )
+                return
+            ogg_data = process_audio_with_effect(converted, effect)
+            await update.message.reply_voice(voice=ogg_data)
+            await log_run(user_id, "sts", transcription, vname, input_audio_url, model=engine)
+            return
+
+        converted = eleven_sts()
         ogg_data = process_audio_with_effect(converted, effect)
         logger.info("STS done: %d bytes -> %d bytes ogg", len(converted), len(ogg_data))
 
@@ -1016,6 +1096,7 @@ async def handle_voice_delete(update: Update, context: ContextTypes.DEFAULT_TYPE
         delete_samples(deleted["sample_urls"])
     except Exception:
         logger.exception("Failed to delete S3 samples")
+    await voice_lab.cleanup_voice(deleted, voice_doc_id)
 
     await query.edit_message_text("הקול נמחק.")
 
@@ -1189,6 +1270,11 @@ async def _newvoice_done_casual(update: Update, context: ContextTypes.DEFAULT_TY
 
         voice_doc_id = await create_voice(user_id, name, elevenlabs_voice_id, sample_urls)
         await set_active_voice(user_id, voice_doc_id)
+        context.application.create_task(
+            _prepare_engines_and_report(
+                context.bot, update.effective_chat.id, voice_doc_id, name, samples,
+            )
+        )
 
         await update.message.reply_text(
             f"הקול \"{name}\" נוצר בהצלחה והוגדר כפעיל!\n"
@@ -2150,6 +2236,204 @@ async def poll_pvc_voices(context: ContextTypes.DEFAULT_TYPE) -> None:
         await mark_voice_notified(v["id"])
 
 
+# ── Alternative engines: /engines, /compare, /prepare ────────────────────────
+
+APPLIO_POLL_INTERVAL_SECONDS = 2 * 60
+
+
+def _default_voice(elevenlabs_voice_id: str, name: str) -> dict:
+    """Voice dict for users without an active voice (the built-in default)."""
+    return {
+        "id": "default",
+        "name": name,
+        "elevenlabs_voice_id": elevenlabs_voice_id,
+        "sample_urls": [],
+        "is_system": True,
+    }
+
+
+async def _send_comparison(
+    update: Update,
+    results: list,
+    user_id: int,
+    run_type: str,
+    text: str,
+    vname: str,
+    effect: str | None,
+    input_audio_url: str = "",
+) -> None:
+    """Reply with one voice message per engine, numbered and labelled."""
+    for i, r in enumerate(results, 1):
+        if r.audio:
+            try:
+                ogg = process_audio_with_effect(r.audio, effect)
+                await update.message.reply_voice(
+                    voice=ogg, caption=f"{i}. {r.label} · {r.seconds:.0f} שנ׳",
+                )
+                await log_run(user_id, run_type, text, vname, input_audio_url, model=r.engine)
+                continue
+            except Exception:
+                logger.exception("Sending %s result failed", r.engine)
+                r.error = "שליחת הקובץ נכשלה"
+        await update.message.reply_text(f"{i}. {r.label} — {r.error}")
+
+
+def _engines_keyboard(pref: dict) -> InlineKeyboardMarkup:
+    def mark(selected: bool, label: str) -> str:
+        return ("✅ " if selected else "") + label
+
+    rows = [[InlineKeyboardButton("— טקסט לקול —", callback_data="eng:noop")]]
+    rows += [
+        [InlineKeyboardButton(mark(pref["tts"] == e, label), callback_data=f"eng:tts:{e}")]
+        for e, label in TTS_ENGINES.items()
+    ]
+    rows.append([InlineKeyboardButton("— הקלטה לקול —", callback_data="eng:noop")])
+    rows += [
+        [InlineKeyboardButton(mark(pref["sts"] == e, label), callback_data=f"eng:sts:{e}")]
+        for e, label in STS_ENGINES.items()
+    ]
+    rows.append([InlineKeyboardButton(
+        ("🔀 מצב השוואה: פעיל" if pref["compare"] else "🔀 מצב השוואה: כבוי"),
+        callback_data="eng:compare",
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+ENGINES_HEADER = (
+    "בחירת מנוע קול.\n"
+    "במצב השוואה כל הודעה חוזרת מכל המנועים, ממוספרת, כדי להשוות ביניהם."
+)
+
+
+async def cmd_engines(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return
+    pref = await get_user_engines(user_id)
+    await update.message.reply_text(ENGINES_HEADER, reply_markup=_engines_keyboard(pref))
+
+
+async def handle_engine_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user_id = query.from_user.id
+    if not await is_authorized(user_id):
+        await query.answer(UNAUTHORIZED_MSG, show_alert=True)
+        return
+    parts = query.data.split(":")
+    pref = await get_user_engines(user_id)
+    if parts[1] == "tts" and parts[2] in TTS_ENGINES:
+        await set_user_engines(user_id, tts=parts[2])
+    elif parts[1] == "sts" and parts[2] in STS_ENGINES:
+        await set_user_engines(user_id, sts=parts[2])
+    elif parts[1] == "compare":
+        await set_user_engines(user_id, compare=not pref["compare"])
+    else:
+        await query.answer()
+        return
+    await query.answer("עודכן")
+    pref = await get_user_engines(user_id)
+    try:
+        await query.edit_message_reply_markup(reply_markup=_engines_keyboard(pref))
+    except Exception:
+        pass  # unchanged markup
+
+
+async def cmd_compare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return
+    pref = await get_user_engines(user_id)
+    enabled = not pref["compare"]
+    await set_user_engines(user_id, compare=enabled)
+    if enabled:
+        await update.message.reply_text(
+            "מצב השוואה פעיל.\n"
+            f"טקסט: {len(TTS_ENGINES)} מנועים · הקלטה: {len(STS_ENGINES)} מנועים.\n"
+            "כל תשובה ממוספרת עם שם המנוע וזמן העיבוד. /compare שוב לכיבוי."
+        )
+    else:
+        await update.message.reply_text("מצב השוואה כבוי. המנוע הנבחר ב-/engines בשימוש.")
+
+
+def _format_prepare_report(name: str, report: dict[str, str]) -> str:
+    def line(label: str, key: str, ok_text: str) -> str:
+        value = report.get(key, "")
+        if value == "ok":
+            return f"✅ {label}: {ok_text}"
+        if value.startswith("skipped"):
+            return f"➖ {label}: לא מוגדר"
+        return f"❌ {label}: {value.removeprefix('failed: ')[:120]}"
+
+    return "\n".join([
+        f"הכנת \"{name}\" למנועים החלופיים:",
+        line("הקלטת ייחוס (Seed-VC, ModelsLab)", "reference", "מוכנה"),
+        line("MiniMax", "minimax", "שיבוט מוכן"),
+        line("Applio", "applio", "באימון (בערך 20-40 דק׳, אעדכן כשמוכן)"),
+    ])
+
+
+async def _prepare_engines_and_report(bot, chat_id: int, voice_doc_id: str, name: str, samples: list[bytes]) -> None:
+    try:
+        report = await voice_lab.prepare_voice(voice_doc_id, samples)
+        await bot.send_message(chat_id, _format_prepare_report(name, report))
+    except Exception:
+        logger.exception("Engine preparation failed for %s", voice_doc_id)
+
+
+async def cmd_prepare(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """(Re)prepare the active custom voice for every alternative engine."""
+    user_id = update.effective_user.id
+    if not await is_authorized(user_id):
+        await update.message.reply_text(UNAUTHORIZED_MSG)
+        return
+    active = await get_active_voice_doc(user_id)
+    if not active or active.get("is_system"):
+        await update.message.reply_text(
+            "בחר/י קול שיצרת (/voices) או צור/י קול חדש עם /newvoice.\n"
+            "לקולות מערכת זמינים רק Seed-VC ו-ModelsLab (לפי הקלטת הדוגמה)."
+        )
+        return
+    samples = await voice_lab.load_samples(active)
+    if not samples:
+        await update.message.reply_text(
+            "הדגימות של הקול הזה לא נגישות (נשמרו באחסון הישן).\n"
+            "צור/י אותו מחדש עם /newvoice כדי לאמן את כל המנועים."
+        )
+        return
+    await update.message.reply_text(f"מכין את \"{active['name']}\" מ-{len(samples)} דגימות...")
+    await _prepare_engines_and_report(
+        context.bot, update.effective_chat.id, active["id"], active["name"], samples,
+    )
+
+
+async def poll_applio_voices(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track Applio training on Modal and tell owners when a model is ready."""
+    try:
+        for v in await find_applio_training_voices():
+            try:
+                await voice_lab.refresh_applio_status(v)
+            except Exception:
+                logger.exception("Applio status check failed for %s", v["id"])
+        for v in await find_unnotified_applio_voices():
+            if v.get("applio_status") == "ready":
+                msg = f"מודל Applio של \"{v['name']}\" מוכן! נסה/י אותו ב-/compare או ב-/engines."
+            else:
+                msg = (
+                    f"אימון Applio של \"{v['name']}\" נכשל: {(v.get('applio_error') or '')[:200]}\n"
+                    "אפשר לנסות שוב עם /prepare."
+                )
+            try:
+                if v.get("telegram_id"):
+                    await context.bot.send_message(v["telegram_id"], msg)
+            except Exception:
+                logger.exception("Applio notify failed for %s", v["id"])
+            await set_voice_fields(v["id"], applio_notified=True)
+    except Exception:
+        logger.exception("poll_applio_voices failed")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def post_init(application) -> None:
@@ -2263,6 +2547,10 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("noeffects", cmd_noeffects))
+    app.add_handler(CommandHandler("engines", cmd_engines))
+    app.add_handler(CommandHandler("compare", cmd_compare))
+    app.add_handler(CommandHandler("prepare", cmd_prepare))
+    app.add_handler(CallbackQueryHandler(handle_engine_choice, pattern=r"^eng:"))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CallbackQueryHandler(handle_set_mode, pattern=r"^set_mode:"))
     app.add_handler(CallbackQueryHandler(handle_set_speed, pattern=r"^set_speed:"))
@@ -2286,6 +2574,12 @@ def main() -> None:
             interval=PVC_POLL_INTERVAL_SECONDS,
             first=30,
             name="poll_pvc_voices",
+        )
+        app.job_queue.run_repeating(
+            poll_applio_voices,
+            interval=APPLIO_POLL_INTERVAL_SECONDS,
+            first=60,
+            name="poll_applio_voices",
         )
     else:
         logger.warning(

@@ -13,6 +13,8 @@ COPY elevenlabs_ivc.py .
 COPY elevenlabs_pvc.py .
 COPY playai_tts.py .
 COPY pitch.py .
+COPY engines/ engines/
+COPY voice_lab.py .
 COPY bot.py .
 
 CMD ["python", "bot.py"]
