@@ -50,6 +50,8 @@ def _download(url: str) -> bytes:
 
 def _result_audio(body: dict, client: httpx.Client) -> bytes:
     deadline = time.monotonic() + POLL_TIMEOUT
+    # Fetch responses don't repeat the id, so remember where to poll.
+    fetch_url = body.get("fetch_result") or f"{API_BASE}/fetch/{body.get('id')}"
     while True:
         status = body.get("status")
         if status == "success":
@@ -62,7 +64,6 @@ def _result_audio(body: dict, client: httpx.Client) -> bytes:
         if time.monotonic() > deadline:
             raise TimeoutError("ModelsLab did not finish in time")
         time.sleep(min(POLL_SECONDS, max(1, int(body.get("eta") or POLL_SECONDS))))
-        fetch_url = body.get("fetch_result") or f"{API_BASE}/fetch/{body.get('id')}"
         r = client.post(fetch_url, json={"key": _key()})
         r.raise_for_status()
         body = r.json()
