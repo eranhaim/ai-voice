@@ -41,6 +41,7 @@ class _Patched(unittest.TestCase):
             mock.patch.object(voice_lab.gpu, "is_enabled", return_value=True),
             mock.patch.object(voice_lab.audio, "to_mp3", side_effect=lambda a, *x, **k: a),
             mock.patch.object(voice_lab.audio, "reference_clip", side_effect=lambda s, *x: b"".join(s)),
+            mock.patch.object(voice_lab.pitch, "estimate_f0_hz", return_value=None),
         ]
         for p in patches:
             p.start()
@@ -108,6 +109,18 @@ class StsRoutingTest(_Patched):
         for status in ("training", "failed", None):
             with self.assertRaises(voice_lab.EngineUnavailable):
                 run(voice_lab.convert("applio", b"rec", self.voice(applio_status=status), None, None))
+
+    def test_male_speaker_is_shifted_up_for_female_voice(self):
+        hz = {b"rec": 110.0, b"REF": 220.0}
+        with mock.patch.object(voice_lab.pitch, "estimate_f0_hz", side_effect=lambda a: hz.get(a)), \
+             mock.patch.object(voice_lab.pitch, "pitch_shift_ogg", return_value=b"rec+12") as shift, \
+             mock.patch.object(voice_lab.gpu, "applio_convert", return_value=b"RVC") as applio, \
+             mock.patch.object(voice_lab.gpu, "seedvc_convert", return_value=b"SVC") as seedvc:
+            run(voice_lab.convert("applio", b"rec", self.voice(), None, None))
+            run(voice_lab.convert("seedvc", b"rec", self.voice(), None, None))
+        applio.assert_called_once_with(VOICE["id"], b"rec", 12)
+        shift.assert_called_once_with(b"rec", 12)
+        seedvc.assert_called_once_with(b"rec+12", b"REF")
 
     def test_applio_not_for_system_voices(self):
         with self.assertRaises(voice_lab.EngineUnavailable):

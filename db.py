@@ -401,6 +401,7 @@ def _engine_fields(doc: dict) -> dict:
         "applio_status": doc.get("applio_status"),
         "applio_error": doc.get("applio_error"),
         "applio_notified": doc.get("applio_notified", True),
+        "target_f0_hz": doc.get("target_f0_hz"),
     }
 
 

@@ -21,6 +21,7 @@ from typing import Awaitable, Callable
 
 from db import set_voice_fields
 from engines import STS_ENGINES, TTS_ENGINES, audio, gpu, minimax, modelslab
+import pitch
 import s3
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,34 @@ async def synthesize(
 
 # ── STS ──────────────────────────────────────────────────────────────────────
 
+async def _target_f0(voice: dict, preview_fetcher: PreviewFetcher) -> float | None:
+    """Median pitch of the target voice, measured once from its reference clip."""
+    if voice.get("target_f0_hz"):
+        return voice["target_f0_hz"]
+    ref = await get_reference(voice, preview_fetcher)
+    hz = await asyncio.to_thread(pitch.estimate_f0_hz, ref)
+    if hz:
+        voice["target_f0_hz"] = hz
+        try:
+            await set_voice_fields(voice["id"], target_f0_hz=hz)
+        except Exception:
+            logger.exception("Could not cache target pitch for %s", voice["id"])
+    return hz
+
+
+async def _semitones(recording: bytes, voice: dict, preview_fetcher: PreviewFetcher) -> int:
+    """Shift that moves the speaker's pitch into the target voice's range.
+
+    RVC and Seed-VC keep the source pitch, so a male speaker converted to a
+    female voice sounds wrong without this.
+    """
+    source_hz = await asyncio.to_thread(pitch.estimate_f0_hz, recording)
+    target_hz = await _target_f0(voice, preview_fetcher)
+    shift = round(pitch.compute_shift_semitones(source_hz, target_hz))
+    logger.info("Pitch shift for %s: src=%s tgt=%s -> %+d", voice["id"], source_hz, target_hz, shift)
+    return shift
+
+
 async def convert(
     engine: str,
     recording: bytes,
@@ -240,11 +269,16 @@ async def convert(
         return await asyncio.to_thread(eleven_sts)
     if engine == "applio":
         await _require_applio(voice)
-        return await asyncio.to_thread(gpu.applio_convert, voice["id"], recording)
+        shift = await _semitones(recording, voice, preview_fetcher)
+        return await asyncio.to_thread(gpu.applio_convert, voice["id"], recording, shift)
     if engine == "seedvc":
         if not gpu.is_enabled():
             raise EngineUnavailable("Modal לא מוגדר")
         ref = await get_reference(voice, preview_fetcher)
+        # The speech model has no pitch control, so shift the input itself.
+        shift = await _semitones(recording, voice, preview_fetcher)
+        if shift:
+            recording = await asyncio.to_thread(pitch.pitch_shift_ogg, recording, shift)
         return await asyncio.to_thread(gpu.seedvc_convert, recording, ref)
     if engine == "modelslab":
         if not modelslab.is_enabled():

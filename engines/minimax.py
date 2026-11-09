@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.minimax.io"
 MIN_CLONE_SECONDS = 10
-MAX_CLONE_SECONDS = 5 * 60
+MAX_CLONE_SECONDS = 4 * 60 + 40  # API limit is 5 min; MP3 padding pushes exactly 300 s over
 
 LANGUAGE_BOOST = {
     "he": "Hebrew", "en": "English", "ar": "Arabic",
