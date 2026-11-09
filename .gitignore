@@ -11,3 +11,4 @@ venv/
 web/node_modules/
 web/dist/
 key
+recordings/
